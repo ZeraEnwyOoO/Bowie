@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -49,12 +49,22 @@
  *     in the permission layer.
  *   - No UI. Hooks carry data; rendering is the application's
  *     job.
+ *   - No custom allocator. Memory management is a platform
+ *     concern, not a hook. This is deliberate: a custom
+ *     allocator is not required by any current Bowie
+ *     requirement, and adding one to the public API without a
+ *     requirement would lock a contract prematurely.
+ *   - No custom clock. Time is a platform concern, not a hook.
+ *     Testing may need time abstraction, but a testing
+ *     requirement is not the same as a public time-hook
+ *     requirement. If a time hook is ever needed, it will be
+ *     added with evidence, not in advance.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * Hooks are grouped by purpose:
+ * Three hooks are provided:
  *
  *   1. Log hook. Receives formatted log lines. The engine
  *      formats; the hook writes.
@@ -65,15 +75,9 @@
  *   3. Storage hook. Reads and writes opaque blobs. The engine
  *      owns the keys; the hook owns the medium.
  *
- *   4. Allocator hook. Allocates and frees memory. The engine
- *      uses it for every allocation it makes.
- *
- *   5. Time hook. Returns monotonic and wall-clock time. The
- *      engine uses it for every time measurement.
- *
- * All hooks are optional. A caller that wants a minimal embed
- * sets none of them; the engine uses platform defaults for
- * allocator and time, and drops log and event output.
+ * All three are optional. A caller that wants a minimal embed
+ * sets none of them; the engine drops log and event output and
+ * uses platform storage where storage is required.
  *
  * A hook must not call back into the engine. Re-entrancy is not
  * supported. A hook that needs to act on an event should queue
@@ -87,6 +91,30 @@
  *     does not free it, even at shutdown.
  *   - A hook must not be replaced while the engine is calling
  *     it. Replacement is safe only between engine calls.
+ *
+ * ----------------------------------------------------------------------------
+ * Status of API details
+ * ----------------------------------------------------------------------------
+ *
+ * The hook set itself, and the three hook kinds, are required
+ * by the current design:
+ *
+ *   - log     required by diagnostics and CLI/UI integration
+ *   - event   required by event.c and by application UI updates
+ *   - storage required by platform storage abstraction
+ *
+ * The concrete shape of some pieces is NOT yet locked. The
+ * following are proposals that must be settled by research and
+ * design before they are treated as facts:
+ *
+ *   - event type list (bowie_event_t)
+ *   - event payload size (BOWIE_EVENT_PAYLOAD_MAX)
+ *   - storage read/write semantics, including the meaning of a
+ *     zero-length write
+ *
+ * These are marked PROPOSAL in the relevant sections below. Do
+ * not depend on their exact values from outside this header
+ * until the proposal is accepted.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -117,13 +145,18 @@ extern "C" {
  * EVENT TYPES
  * ============================================================================
  *
- * Structured events the engine reports. An event carries an
+ * PROPOSAL — not locked.
+ *
+ * The event hook is required. The event type list below is a
+ * proposal for the first implementation. It is expected to
+ * change as the engine's event sources are implemented.
+ *
+ * Do not treat the numeric values or the exact set as stable
+ * until this section is marked LOCKED.
+ *
+ * A structured event the engine reports. An event carries an
  * event code, a subject identifier where one applies, and a
  * short payload.
- *
- * The payload is a fixed-size buffer, not a heap string. An
- * event that needs more data than fits must be split or
- * summarized by the engine.
  */
 
 typedef enum bowie_event {
@@ -172,9 +205,14 @@ typedef enum bowie_event {
 } bowie_event_t;
 
 /*
- * Event payload size. Large enough for a short message, a
- * peer ID hex string, or a path. Not large enough for a full
- * packet or a key.
+ * Event payload size.
+ *
+ * PROPOSAL — not locked.
+ *
+ * Large enough for a short message, a peer ID hex string, or a
+ * path. Not large enough for a full packet or a key.
+ *
+ * The value may change once real events are implemented.
  */
 #define BOWIE_EVENT_PAYLOAD_MAX 128
 
@@ -242,7 +280,11 @@ typedef void (*bowie_event_hook_fn)(const bowie_event_record_t *rec,
  * the caller's responsibility and is not routed through this
  * hook.
  *
- * Read semantics:
+ * ----------------------------------------------------------------------------
+ * Semantics — PROPOSAL, not locked
+ * ----------------------------------------------------------------------------
+ *
+ * Read semantics (proposal):
  *   - The hook writes up to cap bytes into buf.
  *   - On success, the hook sets *out_len to the number of bytes
  *     written and returns BOWIE_OK.
@@ -252,10 +294,15 @@ typedef void (*bowie_event_hook_fn)(const bowie_event_record_t *rec,
  *     BOWIE_ERR_TOO_SMALL and sets *out_len to the required
  *     size.
  *
- * Write semantics:
+ * Write semantics (proposal):
  *   - The hook writes len bytes from buf under key.
  *   - On success, the hook returns BOWIE_OK.
  *   - A len of 0 deletes the key.
+ *
+ * The zero-length-write-as-delete rule is a proposal. It is
+ * convenient, but it is not required by any current Bowie
+ * requirement, and it should be confirmed or replaced before
+ * the storage hook is treated as stable.
  *
  * The hook must be reentrant-safe against itself only for the
  * duration of one call. The engine does not call the storage
@@ -272,44 +319,6 @@ typedef bowie_error_t (*bowie_storage_write_fn)(const char *key,
                                                 const uint8_t *buf,
                                                 size_t len,
                                                 void *userdata);
-
-/*
- * ============================================================================
- * ALLOCATOR HOOK
- * ============================================================================
- *
- * Allocate and free memory on behalf of the engine.
- *
- * The allocator must return memory aligned for any type. A
- * size of 0 returns NULL. A NULL pointer passed to free is a
- * no-op.
- *
- * If the allocator is not set, the engine uses the platform
- * allocator. If only one of alloc/free is set, the engine
- * ignores both and uses the platform allocator.
- */
-
-typedef void *(*bowie_alloc_fn)(size_t size, void *userdata);
-typedef void  (*bowie_free_fn)(void *ptr, void *userdata);
-
-/*
- * ============================================================================
- * TIME HOOK
- * ============================================================================
- *
- * Return monotonic and wall-clock time.
- *
- * The monotonic clock must not go backwards. The wall clock may
- * be adjusted by the system; the engine uses it only for
- * timestamps that are compared against external time, such as
- * grant expiry.
- *
- * If the time hook is not set, the engine uses the platform
- * clock.
- */
-
-typedef bowie_mtime_t (*bowie_mtime_fn)(void *userdata);
-typedef bowie_wtime_t (*bowie_wtime_fn)(void *userdata);
 
 /*
  * ============================================================================
@@ -344,20 +353,6 @@ typedef struct bowie_hooks {
     bowie_storage_write_fn storage_write;
     void                  *storage_userdata;
 
-    /*
-     * Allocator.
-     */
-    bowie_alloc_fn         alloc;
-    bowie_free_fn          free;
-    void                  *alloc_userdata;
-
-    /*
-     * Time.
-     */
-    bowie_mtime_fn         mtime;
-    bowie_wtime_fn         wtime;
-    void                  *time_userdata;
-
 } bowie_hooks_t;
 
 /*
@@ -369,9 +364,9 @@ typedef struct bowie_hooks {
 /*
  * Fill a hook set with all hooks cleared.
  *
- * A cleared hook set is valid. The engine will use platform
- * defaults for allocator and time, and drop log and event
- * output.
+ * A cleared hook set is valid. The engine will drop log and
+ * event output and use platform storage where storage is
+ * required.
  *
  * Passing NULL is a programming error and returns
  * BOWIE_ERR_NULL_ARG without touching memory.
@@ -382,8 +377,7 @@ bowie_error_t bowie_hooks_clear(bowie_hooks_t *hooks);
  * Check whether a hook set is internally consistent.
  *
  * Returns BOWIE_OK when the set can be used as-is. Returns an
- * ARGUMENT-class error when an allocator half is set without
- * the other half, or when userdata is set without the
+ * ARGUMENT-class error when userdata is set without the
  * corresponding function.
  *
  * This function does not modify the set.
@@ -401,6 +395,9 @@ bowie_error_t bowie_hooks_validate(const bowie_hooks_t *hooks);
  *
  * The returned pointer is to a static string and must not be
  * freed. The string is never NULL.
+ *
+ * PROPOSAL — the names returned for proposal event codes are
+ * not yet locked.
  */
 const char *bowie_event_name(bowie_event_t event);
 
