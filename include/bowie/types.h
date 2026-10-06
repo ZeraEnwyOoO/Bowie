@@ -351,6 +351,222 @@ typedef struct bowie_grant bowie_grant_t;
 #define BOWIE_MAX_GRANTS      256
 #define BOWIE_MAX_SESSIONS    512
 
+
+
+/*
+ * ============================================================================
+ * TYPE HELPERS
+ * ============================================================================
+ *
+ * Small value operations on the types in this header. These are
+ * the operations that every layer needs and that would otherwise
+ * be reimplemented in each layer.
+ *
+ * The helpers are grouped by type. Each group follows the same
+ * shape:
+ *
+ *   _clear()    zero the value
+ *   _is_zero()  true when every byte is zero (IDs)
+ *   _is_set()   true when the value is not the unset state
+ *               (addresses; the unset state is BOWIE_AF_UNSPEC)
+ *   _equal()    true when two values are equal
+ *
+ * No helper here allocates, performs I/O, or depends on a
+ * platform. Every one is a pure value operation that can be
+ * inlined by the compiler.
+ *
+ * Helpers whose semantics depend on a policy decision (hashing,
+ * ordering, string formatting, address classification) are NOT
+ * declared here. They will be added by the layer that owns the
+ * policy, when that policy is decided.
+ */
+
+/*
+ * ----------------------------------------------------------------------------
+ * Spans and strings
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * True when the span has zero length.
+ *
+ * A span with data == NULL and len == 0 is empty.
+ * A span with data != NULL and len == 0 is also empty.
+ */
+int bowie_span_is_empty(bowie_span_t span);
+
+/*
+ * True when two spans have the same length and the same bytes.
+ *
+ * Two empty spans are equal regardless of their data pointers.
+ */
+int bowie_span_equal(bowie_span_t a, bowie_span_t b);
+
+/*
+ * True when the string slice has zero length.
+ */
+int bowie_str_is_empty(bowie_str_t str);
+
+/*
+ * True when two string slices have the same length and the same
+ * bytes.
+ *
+ * The comparison is byte-wise, not locale-aware. No NUL
+ * terminator is required or assumed.
+ */
+int bowie_str_equal(bowie_str_t a, bowie_str_t b);
+
+/*
+ * ----------------------------------------------------------------------------
+ * Buffers
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reset a buffer to empty. The capacity is not changed; only
+ * the used length is reset.
+ *
+ * Passing NULL is a no-op.
+ */
+void bowie_buf_clear(bowie_buf_t *buf);
+
+/*
+ * ----------------------------------------------------------------------------
+ * Addresses
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reset an address to the unset state. The family becomes
+ * BOWIE_AF_UNSPEC, the address bytes become zero, and the port
+ * becomes zero.
+ *
+ * Passing NULL is a no-op.
+ */
+void bowie_addr_clear(bowie_addr_t *addr);
+
+/*
+ * True when the address is not in the unset state, that is,
+ * when its family is a real address family.
+ */
+int bowie_addr_is_set(const bowie_addr_t *addr);
+
+/*
+ * True when two addresses have the same family, the same
+ * address bytes, and the same port.
+ *
+ * Only the bytes meaningful for the family are compared. For
+ * BOWIE_AF_INET, only the first four bytes are compared. For
+ * BOWIE_AF_INET6, all sixteen are compared.
+ *
+ * Two unset addresses are equal.
+ */
+int bowie_addr_equal(const bowie_addr_t *a, const bowie_addr_t *b);
+
+/*
+ * ----------------------------------------------------------------------------
+ * Peer ID
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reset a peer ID to the all-zero state.
+ *
+ * Passing NULL is a no-op.
+ */
+void bowie_peer_id_clear(bowie_peer_id_t *id);
+
+/*
+ * True when every byte of the peer ID is zero.
+ *
+ * A NULL pointer is treated as zero, so the function returns
+ * true for NULL.
+ */
+int bowie_peer_id_is_zero(const bowie_peer_id_t *id);
+
+/*
+ * True when two peer IDs have the same bytes.
+ *
+ * Two NULL pointers are equal. A NULL pointer and a zero ID are
+ * equal.
+ */
+int bowie_peer_id_equal(const bowie_peer_id_t *a,
+                        const bowie_peer_id_t *b);
+
+/*
+ * ----------------------------------------------------------------------------
+ * Public ID
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reset a public ID to the all-zero state.
+ *
+ * Passing NULL is a no-op.
+ */
+void bowie_public_id_clear(bowie_public_id_t *id);
+
+/*
+ * True when every byte of the public ID is zero.
+ */
+int bowie_public_id_is_zero(const bowie_public_id_t *id);
+
+/*
+ * True when two public IDs have the same bytes.
+ */
+int bowie_public_id_equal(const bowie_public_id_t *a,
+                          const bowie_public_id_t *b);
+
+/*
+ * ----------------------------------------------------------------------------
+ * Session ID
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reset a session ID to the all-zero state.
+ *
+ * Passing NULL is a no-op.
+ */
+void bowie_session_id_clear(bowie_session_id_t *id);
+
+/*
+ * True when every byte of the session ID is zero.
+ */
+int bowie_session_id_is_zero(const bowie_session_id_t *id);
+
+/*
+ * True when two session IDs have the same bytes.
+ */
+int bowie_session_id_equal(const bowie_session_id_t *a,
+                           const bowie_session_id_t *b);
+
+/*
+ * ----------------------------------------------------------------------------
+ * Grant ID
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reset a grant ID to the all-zero state.
+ *
+ * Passing NULL is a no-op.
+ */
+void bowie_grant_id_clear(bowie_grant_id_t *id);
+
+/*
+ * True when every byte of the grant ID is zero.
+ */
+int bowie_grant_id_is_zero(const bowie_grant_id_t *id);
+
+/*
+ * True when two grant IDs have the same bytes.
+ */
+int bowie_grant_id_equal(const bowie_grant_id_t *a,
+                         const bowie_grant_id_t *b);
+
+
+
 /*
  * ============================================================================
  * END OF PUBLIC TYPES
