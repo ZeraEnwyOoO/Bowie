@@ -101,11 +101,12 @@
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <stdint.h>   uint32_t, uint8_t
- *   <stddef.h>   size_t
+ *   <stdint.h>        uint32_t, uint8_t
+ *   <stddef.h>        size_t
+ *   "bowie/err.h"     bowie_error_t
  *
- * This header is otherwise standalone. It does not include any
- * other Bowie header.
+ * err.h is foundational and has no dependencies of its own, so
+ * including it here does not create a coupling problem.
  * ============================================================================
  */
 
@@ -114,6 +115,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+
+#include "bowie/err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -302,16 +305,9 @@ int bowie_version_compare(bowie_version_t a, bowie_version_t b);
  * Returns BOWIE_ERR_NULL_ARG if str or out is NULL.
  * Returns BOWIE_ERR_FORMAT if the string is not a valid version.
  * Returns BOWIE_ERR_RANGE if a component exceeds 255.
- *
- * The error codes come from bowie/err.h. This header does not
- * include err.h; version.c includes it. The function is
- * declared here with an int return type so that this header
- * stays free of the error contract.
- *
- * A caller that wants the typed error includes bowie/err.h and
- * casts the result. The values are defined to match.
  */
-int bowie_version_parse(const char *str, bowie_version_t *out);
+bowie_error_t bowie_version_parse(const char *str,
+                                  bowie_version_t *out);
 
 /*
  * ============================================================================
