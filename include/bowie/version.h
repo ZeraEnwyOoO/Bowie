@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -21,23 +21,27 @@
  * BOWIE — VERSION
  * ============================================================================
  *
- * Compile-time version constants for the Bowie library and
- * applications.
+ * Compile-time version constants and runtime version access for
+ * the Bowie library and applications.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No runtime version negotiation. The numeric macros and the
- *     string macro are compiled in; there is no API to query a
- *     peer's version through this header.
  *   - No build metadata. Build type, build date, build commit,
- *     and build platform are declared in the generated build
- *     headers, not here.
- *   - No API version. The public API version is separate from the
- *     library version; it is declared in the public API header.
- *   - No dependency on any other Bowie header. This file is
- *     standalone.
+ *     and build platform are not declared here. They require a
+ *     build system that generates a header, and Bowie does not
+ *     have one yet. When it does, those accessors will be added
+ *     with their own contract.
+ *   - No API version. The public API version is separate from
+ *     the library version. If a distinct API version is needed,
+ *     it will be declared with its own macros and accessors.
+ *   - No network version negotiation. Comparing a local version
+ *     to a remote one is a protocol concern. This header only
+ *     compares local versions to compile-time or caller-supplied
+ *     values.
+ *   - No dynamic allocation. Every runtime accessor returns a
+ *     value or a pointer to static storage.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -66,7 +70,15 @@
  *
  * Pre-release and build-metadata suffixes are not encoded in the
  * numeric forms. A pre-release string, if used, is a build-time
- * concern and lives in the generated build headers.
+ * concern.
+ *
+ * The macros provide compile-time access. The functions provide
+ * runtime access to the same values, so that a consumer that
+ * loads the library as a shared object can report the version it
+ * is actually linked against, not the one it compiled against.
+ *
+ * The two forms must agree. The functions in version.c return
+ * the same values as the macros. A test asserts this.
  *
  * ----------------------------------------------------------------------------
  * Version code layout
@@ -89,12 +101,23 @@
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   None. This header is standalone.
+ *   <stdint.h>   uint32_t, uint8_t
+ *   <stddef.h>   size_t
+ *
+ * This header is otherwise standalone. It does not include any
+ * other Bowie header.
  * ============================================================================
  */
 
 #ifndef BOWIE_VERSION_H
 #define BOWIE_VERSION_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * ============================================================================
@@ -169,6 +192,143 @@
 
 /*
  * ============================================================================
+ * VERSION STRUCT
+ * ============================================================================
+ *
+ * A parsed version. The three components are stored separately so
+ * that a caller can read them without unpacking a code.
+ *
+ * A parsed version with all three components zero is valid and
+ * means "0.0.0", not "unset". There is no unset state; a caller
+ * that needs one must track it separately.
+ */
+
+typedef struct bowie_version {
+    uint8_t major;
+    uint8_t minor;
+    uint8_t patch;
+} bowie_version_t;
+
+/*
+ * ============================================================================
+ * RUNTIME ACCESSORS
+ * ============================================================================
+ *
+ * The runtime version of the library that is actually linked.
+ * These return the same values as the macros above when the
+ * library is built from the same source tree.
+ *
+ * The distinction matters for a shared library: a consumer may
+ * have been compiled against one version of the header and
+ * linked against another version of the library. The macros
+ * report the compile-time version; the functions report the
+ * linked version.
+ */
+
+/*
+ * Return the version string.
+ *
+ * The returned pointer is to a static string and must not be
+ * freed. The string is never NULL.
+ */
+const char *bowie_version_string(void);
+
+/*
+ * Return the packed version code.
+ */
+uint32_t bowie_version_code(void);
+
+/*
+ * Return the major, minor, and patch components separately.
+ *
+ * Passing NULL for any output is a no-op for that output.
+ */
+void bowie_version_components(uint8_t *major,
+                              uint8_t *minor,
+                              uint8_t *patch);
+
+/*
+ * Return the parsed version.
+ */
+bowie_version_t bowie_version(void);
+
+/*
+ * ============================================================================
+ * RUNTIME COMPARISON
+ * ============================================================================
+ */
+
+/*
+ * True when the linked library version is at least the given
+ * version.
+ */
+int bowie_version_at_least(uint8_t major,
+                           uint8_t minor,
+                           uint8_t patch);
+
+/*
+ * True when the linked library version is strictly before the
+ * given version.
+ */
+int bowie_version_before(uint8_t major,
+                         uint8_t minor,
+                         uint8_t patch);
+
+/*
+ * Compare two parsed versions.
+ *
+ * Returns:
+ *   < 0  if a is older than b.
+ *     0  if a and b are equal.
+ *   > 0  if a is newer than b.
+ */
+int bowie_version_compare(bowie_version_t a, bowie_version_t b);
+
+/*
+ * ============================================================================
+ * VERSION PARSING
+ * ============================================================================
+ */
+
+/*
+ * Parse a version string of the form "MAJOR.MINOR.PATCH".
+ *
+ * Leading and trailing whitespace is not accepted. A leading
+ * 'v' or 'V' is accepted and skipped. Missing components are
+ * treated as zero: "1" parses as 1.0.0, "1.2" parses as 1.2.0.
+ *
+ * Returns BOWIE_OK on success, with *out filled.
+ *
+ * Returns BOWIE_ERR_NULL_ARG if str or out is NULL.
+ * Returns BOWIE_ERR_FORMAT if the string is not a valid version.
+ * Returns BOWIE_ERR_RANGE if a component exceeds 255.
+ *
+ * The error codes come from bowie/err.h. This header does not
+ * include err.h; version.c includes it. The function is
+ * declared here with an int return type so that this header
+ * stays free of the error contract.
+ *
+ * A caller that wants the typed error includes bowie/err.h and
+ * casts the result. The values are defined to match.
+ */
+int bowie_version_parse(const char *str, bowie_version_t *out);
+
+/*
+ * ============================================================================
+ * ABOUT
+ * ============================================================================
+ *
+ * A one-line human-readable description of the library,
+ * including its version and license. Intended for CLI
+ * --version output and for log banners.
+ *
+ * The returned pointer is to a static string and must not be
+ * freed. The string is never NULL.
+ */
+const char *bowie_about(void);
+
+/*
+ * ============================================================================
  * FUN ARRAY
  * ============================================================================
  *
@@ -215,8 +375,12 @@ static const char *const bowie_fun[] = {
 
 /*
  * ============================================================================
- * END OF FILE
+ * END OF PUBLIC VERSION
  * ============================================================================
  */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* BOWIE_VERSION_H */
