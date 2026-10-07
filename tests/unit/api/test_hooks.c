@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -30,6 +30,17 @@
  * a PROPOSAL; these tests assert the properties the function
  * promises, not the specific values, so that the list can be
  * extended without rewriting the tests.
+ *
+ * ----------------------------------------------------------------------------
+ * Design note: function pointers and ck_assert_ptr_null
+ * ----------------------------------------------------------------------------
+ *
+ * ck_assert_ptr_null() takes a void pointer. A function pointer
+ * is not convertible to void * under ISO C, and -Wpedantic
+ * rejects the conversion. The tests therefore compare a
+ * function pointer to NULL directly with ck_assert(), which is
+ * well-defined and portable. Object pointers (userdata) still
+ * use ck_assert_ptr_null(), because those are convertible.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -119,12 +130,12 @@ START_TEST(test_clear_zeroed_ok)
 
     ck_assert_int_eq(bowie_hooks_clear(&hooks), BOWIE_OK);
 
-    ck_assert_ptr_null(hooks.log);
+    ck_assert(hooks.log == NULL);
     ck_assert_ptr_null(hooks.log_userdata);
-    ck_assert_ptr_null(hooks.event);
+    ck_assert(hooks.event == NULL);
     ck_assert_ptr_null(hooks.event_userdata);
-    ck_assert_ptr_null(hooks.storage_read);
-    ck_assert_ptr_null(hooks.storage_write);
+    ck_assert(hooks.storage_read == NULL);
+    ck_assert(hooks.storage_write == NULL);
     ck_assert_ptr_null(hooks.storage_userdata);
 }
 END_TEST
@@ -144,12 +155,12 @@ START_TEST(test_clear_nonzero_ok)
 
     ck_assert_int_eq(bowie_hooks_clear(&hooks), BOWIE_OK);
 
-    ck_assert_ptr_null(hooks.log);
+    ck_assert(hooks.log == NULL);
     ck_assert_ptr_null(hooks.log_userdata);
-    ck_assert_ptr_null(hooks.event);
+    ck_assert(hooks.event == NULL);
     ck_assert_ptr_null(hooks.event_userdata);
-    ck_assert_ptr_null(hooks.storage_read);
-    ck_assert_ptr_null(hooks.storage_write);
+    ck_assert(hooks.storage_read == NULL);
+    ck_assert(hooks.storage_write == NULL);
     ck_assert_ptr_null(hooks.storage_userdata);
 }
 END_TEST
