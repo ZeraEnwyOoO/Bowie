@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -364,6 +364,58 @@ START_TEST(test_validate_bootstrap_peer_count_too_large)
 }
 END_TEST
 
+START_TEST(test_validate_bootstrap_peer_not_terminated)
+{
+    bowie_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    (void)bowie_config_defaults(&cfg);
+
+    /*
+     * Set one entry with a non-zero last byte. The entry is
+     * within the count, so it must be terminated.
+     */
+    cfg.bootstrap_peer_count = 1u;
+    memset(cfg.bootstrap_peers[0], 'x',
+           sizeof(cfg.bootstrap_peers[0]));
+
+    ck_assert_int_eq(bowie_config_validate(&cfg),
+                     BOWIE_ERR_NOT_TERMINATED);
+}
+END_TEST
+
+START_TEST(test_validate_bootstrap_peer_terminated_ok)
+{
+    bowie_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    (void)bowie_config_defaults(&cfg);
+
+    cfg.bootstrap_peer_count = 1u;
+    memset(cfg.bootstrap_peers[0], 'x',
+           sizeof(cfg.bootstrap_peers[0]) - 1u);
+    cfg.bootstrap_peers[0][BOWIE_CONFIG_PEER_MAX_LEN - 1u] = '\0';
+
+    ck_assert_int_eq(bowie_config_validate(&cfg), BOWIE_OK);
+}
+END_TEST
+
+START_TEST(test_validate_bootstrap_entries_beyond_count_ignored)
+{
+    /*
+     * An entry beyond bootstrap_peer_count is not checked.
+     * The count defines which entries are meaningful.
+     */
+    bowie_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    (void)bowie_config_defaults(&cfg);
+
+    cfg.bootstrap_peer_count = 0u;
+    memset(cfg.bootstrap_peers[0], 'x',
+           sizeof(cfg.bootstrap_peers[0]));
+
+    ck_assert_int_eq(bowie_config_validate(&cfg), BOWIE_OK);
+}
+END_TEST
+
 /*
  * ============================================================================
  * NORMALIZE
@@ -450,7 +502,9 @@ START_TEST(test_normalize_strips_unknown_capabilities)
                            | (uint32_t)BOWIE_CAP_GATEWAY;
     ck_assert_uint_eq(cfg.capabilities & ~allowed, 0u);
 }
-END_TESTSTART_TEST(test_normalize_applies_mode_preset)
+END_TEST
+
+START_TEST(test_normalize_applies_mode_preset)
 {
     bowie_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -495,6 +549,28 @@ START_TEST(test_normalize_clamps_bootstrap_count)
     (void)bowie_config_normalize(&cfg);
     ck_assert_uint_eq(cfg.bootstrap_peer_count,
                       BOWIE_CONFIG_PEER_MAX);
+}
+END_TEST
+
+START_TEST(test_normalize_terminates_bootstrap_entries)
+{
+    bowie_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    (void)bowie_config_defaults(&cfg);
+
+    cfg.bootstrap_peer_count = 3u;
+    for (size_t i = 0u; i < 3u; i++) {
+        memset(cfg.bootstrap_peers[i], 'x',
+               sizeof(cfg.bootstrap_peers[i]));
+    }
+
+    (void)bowie_config_normalize(&cfg);
+
+    for (size_t i = 0u; i < 3u; i++) {
+        ck_assert_int_eq(
+            cfg.bootstrap_peers[i][BOWIE_CONFIG_PEER_MAX_LEN - 1u],
+            '\0');
+    }
 }
 END_TEST
 
@@ -563,7 +639,8 @@ static Suite *config_suite(void)
     tcase_add_test(tc_def, test_defaults_zero_fills_everything);
     tcase_add_test(tc_def, test_defaults_preserves_mode);
     tcase_add_test(tc_def, test_defaults_preserves_capabilities);
-    tcase_add_test(tc_def, test_defaults_mode_fills_capabilities_when_unset);
+    tcase_add_test(tc_def,
+                   test_defaults_mode_fills_capabilities_when_unset);
     suite_add_tcase(s, tc_def);
 
     TCase *tc_cap = tcase_create("Capabilities");
@@ -590,26 +667,40 @@ static Suite *config_suite(void)
     tcase_add_test(tc_val, test_validate_zero_connect_timeout);
     tcase_add_test(tc_val, test_validate_zero_operation_timeout);
     tcase_add_test(tc_val, test_validate_no_expiry_no_revocation);
-    tcase_add_test(tc_val, test_validate_no_expiry_with_revocation_ok);
+    tcase_add_test(tc_val,
+                   test_validate_no_expiry_with_revocation_ok);
     tcase_add_test(tc_val, test_validate_interface_not_terminated);
-    tcase_add_test(tc_val, test_validate_bootstrap_peer_count_too_large);
+    tcase_add_test(tc_val,
+                   test_validate_bootstrap_peer_count_too_large);
+    tcase_add_test(tc_val,
+                   test_validate_bootstrap_peer_not_terminated);
+    tcase_add_test(tc_val,
+                   test_validate_bootstrap_peer_terminated_ok);
+    tcase_add_test(tc_val,
+                   test_validate_bootstrap_entries_beyond_count_ignored);
     suite_add_tcase(s, tc_val);
 
     TCase *tc_norm = tcase_create("Normalize");
     tcase_add_test(tc_norm, test_normalize_null);
     tcase_add_test(tc_norm, test_normalize_zeroed_is_valid);
     tcase_add_test(tc_norm, test_normalize_bad_mode_becomes_unset);
-    tcase_add_test(tc_norm, test_normalize_bad_log_level_becomes_info);
+    tcase_add_test(tc_norm,
+                   test_normalize_bad_log_level_becomes_info);
     tcase_add_test(tc_norm, test_normalize_clamps_max_peers_high);
     tcase_add_test(tc_norm, test_normalize_fills_zero_max_peers);
     tcase_add_test(tc_norm, test_normalize_fills_zero_timeouts);
-    tcase_add_test(tc_norm, test_normalize_strips_unknown_capabilities);
+    tcase_add_test(tc_norm,
+                   test_normalize_strips_unknown_capabilities);
     tcase_add_test(tc_norm, test_normalize_applies_mode_preset);
-    tcase_add_test(tc_norm, test_normalize_keeps_explicit_capabilities);
+    tcase_add_test(tc_norm,
+                   test_normalize_keeps_explicit_capabilities);
     tcase_add_test(tc_norm, test_normalize_terminates_interface);
     tcase_add_test(tc_norm, test_normalize_clamps_bootstrap_count);
+    tcase_add_test(tc_norm,
+                   test_normalize_terminates_bootstrap_entries);
     tcase_add_test(tc_norm, test_normalize_is_idempotent);
-    tcase_add_test(tc_norm, test_normalize_then_validate_for_each_mode);
+    tcase_add_test(tc_norm,
+                   test_normalize_then_validate_for_each_mode);
     suite_add_tcase(s, tc_norm);
 
     return s;
