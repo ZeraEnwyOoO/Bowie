@@ -98,7 +98,9 @@ LIB_SRCS := \
     src/api/err.c \
     src/api/config.c \
     src/api/hooks.c \
-    src/core/endian.c
+    src/core/endian.c \
+    src/core/mem.c \
+    src/core/bytes.c
 
 # Library objects. The path is rewritten so that the object tree
 # mirrors the source tree under build/obj/.
@@ -120,7 +122,9 @@ UNIT_TEST_SRCS := \
     tests/unit/api/test_err.c \
     tests/unit/api/test_config.c \
     tests/unit/api/test_hooks.c \
-    tests/unit/core/test_endian.c
+    tests/unit/core/test_endian.c \
+    tests/unit/core/test_mem.c \
+    tests/unit/core/test_bytes.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
