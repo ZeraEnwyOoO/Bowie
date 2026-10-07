@@ -125,15 +125,25 @@ UNIT_TEST_SRCS := \
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
 # ----------------------------------------------------------------------------
+# Phony targets
+# ----------------------------------------------------------------------------
+
+.PHONY: all test clean help
+
+# ----------------------------------------------------------------------------
 # Default target
 # ----------------------------------------------------------------------------
 
-.PHONY: all
 all: $(LIB)
 
 # ----------------------------------------------------------------------------
 # Library
 # ----------------------------------------------------------------------------
+#
+# The library is built from $(LIB_OBJS). Each object is built
+# from its source with the rule below. If a source file is
+# added to $(LIB_SRCS) and its object does not yet exist, the
+# library is rebuilt.
 
 $(LIB): $(LIB_OBJS)
 	@mkdir -p $(dir $@)
@@ -149,6 +159,10 @@ $(OBJ_DIR)/%.o: src/%.c
 # ----------------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------------
+#
+# Each test binary depends on the library. If the library is
+# out of date, it is rebuilt first. The test rule then links
+# the test against the library.
 
 .PHONY: test
 test: $(UNIT_TEST_BINS)
@@ -203,6 +217,12 @@ help:
 	@echo
 	@echo "  CC       C compiler (default: cc)"
 	@echo "  V        set V=1 for verbose output"
+	@echo
+	@echo "Examples:"
+	@echo
+	@echo "  make test"
+	@echo "  make clean && make test"
+	@echo "  make V=1 test"
 
 # ----------------------------------------------------------------------------
 # Verbose
@@ -217,3 +237,23 @@ Q :=
 else
 Q := @
 endif
+
+# ----------------------------------------------------------------------------
+# Header dependencies
+# ----------------------------------------------------------------------------
+#
+# Generate a .d file for each object that lists the headers it
+# includes. The .d files are included below so that make knows
+# to rebuild an object when a header changes.
+#
+# The -MMD flag tells the compiler to write the dependency file
+# next to the object. The -MP flag adds phony targets for the
+# headers, so that a header that is deleted does not break the
+# build.
+#
+# The dependency files are included with -include, so that a
+# missing .d file is not an error on the first build.
+
+CFLAGS  += -MMD -MP
+
+-include $(LIB_OBJS:.o=.d)
