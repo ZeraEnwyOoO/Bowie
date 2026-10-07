@@ -1,4 +1,4 @@
-# ============================================================================
+ # ============================================================================
 # Bowie — Makefile (Prototype Phase)
 # ============================================================================
 #
@@ -26,6 +26,7 @@
 #   CFLAGS     compiler flags
 #   LDFLAGS    linker flags
 #   LDLIBS     libraries to link
+#   SUBUNIT    -lsubunit when Check needs it (see below)
 #   V          verbose (V=1 to show full compile commands)
 #
 # ----------------------------------------------------------------------------
@@ -65,7 +66,19 @@ CFLAGS  += -Isrc
 CFLAGS  += -Itests
 
 # Check framework needs these on Linux.
-LDLIBS  := -lcheck -lsubunit -lm -lpthread -lrt
+#
+# -lsubunit is required only when Check was built with the
+# subunit protocol. On a system where it is not present, the
+# link fails with "cannot find -lsubunit". To drop it:
+#
+#     make SUBUNIT= test
+#
+# The default assumes the common case where Check has no
+# subunit dependency.
+
+SUBUNIT ?= -lsubunit
+
+LDLIBS  := -lcheck $(SUBUNIT) -lm -lpthread -lrt
 
 # ----------------------------------------------------------------------------
 # Directories
@@ -197,18 +210,11 @@ help:
 	@echo "Variables:"
 	@echo
 	@echo "  CC       C compiler (default: cc)"
+	@echo "  SUBUNIT  -lsubunit when Check needs it"
 	@echo "  V        set V=1 for verbose output"
-
-# ----------------------------------------------------------------------------
-# Verbose
-# ----------------------------------------------------------------------------
-#
-# Setting V=1 disables the @ prefix on the compile and link
-# lines, so every command is echoed. This is the same convention
-# the Linux kernel and many other projects use.
-
-ifeq ($(V),1)
-Q :=
-else
-Q := @
-endif
+	@echo
+	@echo "Examples:"
+	@echo
+	@echo "  make test"
+	@echo "  make SUBUNIT= test   (if Check has no subunit)"
+	@echo "  make V=1 test        (verbose)"
