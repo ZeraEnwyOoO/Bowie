@@ -78,6 +78,33 @@
  * bowie_err_last().
  *
  * ----------------------------------------------------------------------------
+ * Negative error codes and range checks
+ * ----------------------------------------------------------------------------
+ *
+ * Error codes are negative. Each class is a contiguous range,
+ * and the range is written in ascending numeric order:
+ *
+ *     lower_bound <= err <= upper_bound
+ *
+ * For a negative range, the "upper bound" is the value closest
+ * to zero. For example, GENERAL is -8 .. -1, so the check is
+ * (-8 <= err <= -1), which is the same as:
+ *
+ *     err <= -1  &&  err >= -8
+ *
+ * The class checks below are written as (err <= upper &&
+ * err >= lower) so that the direction is explicit. The first
+ * macro in each pair is the upper bound; the second is the
+ * lower bound.
+ *
+ * This direction matters. Writing the comparison the other way
+ * round (err >= upper && err <= lower) is silently false for
+ * every negative value, and a test that only checks the upper
+ * bound of each range would still pass. The test suite checks
+ * the upper bound, and the direction is the reason the first
+ * version of this file failed all ten class tests.
+ *
+ * ----------------------------------------------------------------------------
  * Portability note: EAGAIN vs EWOULDBLOCK
  * ----------------------------------------------------------------------------
  *
@@ -464,44 +491,62 @@ bowie_err_class_t bowie_err_class(bowie_error_t err)
         return BOWIE_ERR_CLASS_SENTINEL;
     }
 
-    if (err >= BOWIE_ERR_GENERAL &&
-        err <= BOWIE_ERR_NOT_FOUND) {
+    /*
+     * Error codes are negative. Each class is a contiguous
+     * range written in ascending numeric order, so the range
+     * is:
+     *
+     *     lower_bound <= err <= upper_bound
+     *
+     * For a negative range, the "upper bound" is the value
+     * closest to zero. For example, GENERAL is -8 .. -1, so
+     * the check is (-8 <= err <= -1), which is the same as
+     * (err <= -1 && err >= -8).
+     *
+     * The comparisons below are written as (err <= upper &&
+     * err >= lower) so that the direction is explicit. The
+     * first macro in each pair is the upper bound; the second
+     * is the lower bound.
+     */
+
+    if (err <= BOWIE_ERR_GENERAL &&
+        err >= BOWIE_ERR_NOT_FOUND) {
         return BOWIE_ERR_CLASS_GENERAL;
     }
-    if (err >= BOWIE_ERR_INVAL &&
-        err <= BOWIE_ERR_NOT_TERMINATED) {
+    if (err <= BOWIE_ERR_INVAL &&
+        err >= BOWIE_ERR_NOT_TERMINATED) {
         return BOWIE_ERR_CLASS_ARGUMENT;
     }
-    if (err >= BOWIE_ERR_NOMEM &&
-        err <= BOWIE_ERR_OVERFLOW) {
+    if (err <= BOWIE_ERR_NOMEM &&
+        err >= BOWIE_ERR_OVERFLOW) {
         return BOWIE_ERR_CLASS_MEMORY;
     }
-    if (err >= BOWIE_ERR_NETWORK &&
-        err <= BOWIE_ERR_PROTOCOL) {
+    if (err <= BOWIE_ERR_NETWORK &&
+        err >= BOWIE_ERR_PROTOCOL) {
         return BOWIE_ERR_CLASS_NETWORK;
     }
-    if (err >= BOWIE_ERR_CRYPTO &&
-        err <= BOWIE_ERR_KEY_MISSING) {
+    if (err <= BOWIE_ERR_CRYPTO &&
+        err >= BOWIE_ERR_KEY_MISSING) {
         return BOWIE_ERR_CLASS_CRYPTO;
     }
-    if (err >= BOWIE_ERR_DHT &&
-        err <= BOWIE_ERR_DHT_ROUTING) {
+    if (err <= BOWIE_ERR_DHT &&
+        err >= BOWIE_ERR_DHT_ROUTING) {
         return BOWIE_ERR_CLASS_DHT;
     }
-    if (err >= BOWIE_ERR_TUNNEL &&
-        err <= BOWIE_ERR_FRAGMENT) {
+    if (err <= BOWIE_ERR_TUNNEL &&
+        err >= BOWIE_ERR_FRAGMENT) {
         return BOWIE_ERR_CLASS_TUNNEL;
     }
-    if (err >= BOWIE_ERR_PERMISSION &&
-        err <= BOWIE_ERR_SUBJECT_MISMATCH) {
+    if (err <= BOWIE_ERR_PERMISSION &&
+        err >= BOWIE_ERR_SUBJECT_MISMATCH) {
         return BOWIE_ERR_CLASS_PERMISSION;
     }
-    if (err >= BOWIE_ERR_GATEWAY &&
-        err <= BOWIE_ERR_POLICY) {
+    if (err <= BOWIE_ERR_GATEWAY &&
+        err >= BOWIE_ERR_POLICY) {
         return BOWIE_ERR_CLASS_GATEWAY;
     }
-    if (err >= BOWIE_ERR_STATE &&
-        err <= BOWIE_ERR_BUSY) {
+    if (err <= BOWIE_ERR_STATE &&
+        err >= BOWIE_ERR_BUSY) {
         return BOWIE_ERR_CLASS_STATE;
     }
 
