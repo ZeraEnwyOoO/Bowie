@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -98,8 +98,9 @@ extern "C" {
  * ============================================================================
  */
 
-#define BOWIE_CONFIG_INTERFACE_MAX 16
-#define BOWIE_CONFIG_PEER_MAX      64
+#define BOWIE_CONFIG_INTERFACE_MAX  16
+#define BOWIE_CONFIG_PEER_MAX       64
+#define BOWIE_CONFIG_PEER_MAX_LEN   64
 
 /*
  * ============================================================================
@@ -187,7 +188,7 @@ typedef struct bowie_config {
      */
 
     /* DHT bootstrap peer list. Empty means no bootstrap. */
-    char bootstrap_peers[BOWIE_CONFIG_PEER_MAX][64];
+    char bootstrap_peers[BOWIE_CONFIG_PEER_MAX][BOWIE_CONFIG_PEER_MAX_LEN];
     size_t bootstrap_peer_count;
 
     /* Enable DHT. */
