@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -78,19 +78,34 @@
  * bowie_err_last().
  *
  * ----------------------------------------------------------------------------
+ * Portability note: EAGAIN vs EWOULDBLOCK
+ * ----------------------------------------------------------------------------
+ *
+ * On some systems (notably Linux), EAGAIN and EWOULDBLOCK are
+ * the same value. On others, they are distinct. A switch
+ * statement that lists both as separate cases fails to compile
+ * on the former, because the two case labels collide.
+ *
+ * The mapping below guards the duplicate case with the
+ * preprocessor: the EWOULDBLOCK branch is compiled only when it
+ * is a distinct value. The reverse mapping is symmetric.
+ *
+ * The same idiom applies to any other errno pair that a future
+ * edit might add. ENOTSUP and EOPNOTSUPP are the other common
+ * pair; they are not mapped here yet.
+ *
+ * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
  *   <errno.h>          errno constants
  *   <string.h>         strlen, memcpy, memset
- *   <stdio.h>          snprintf
  *   "bowie/err.h"      the taxonomy and the declarations
  * ============================================================================
  */
 
 #include <errno.h>
 #include <string.h>
-#include <stdio.h>
 
 #include "bowie/err.h"
 
@@ -604,7 +619,7 @@ bowie_error_t bowie_err_last(void)
  */
 
 typedef struct err_context {
-    char     labels[BOWIE_ERR_CONTEXT_MAX][BOWIE_ERR_CONTEXT_LABEL];
+    char         labels[BOWIE_ERR_CONTEXT_MAX][BOWIE_ERR_CONTEXT_LABEL];
     unsigned int count;   /* number of valid labels */
     unsigned int head;    /* next slot to write */
 } err_context_t;
@@ -736,6 +751,11 @@ int bowie_err_context_format(char *buf, unsigned int cap)
  * ============================================================================
  * ERRNO MAPPING
  * ============================================================================
+ *
+ * The mapping is symmetric where it can be. EAGAIN and
+ * EWOULDBLOCK are the same value on some systems; the guard
+ * below compiles the duplicate case only when the two are
+ * distinct. See the portability note in the file header.
  */
 
 bowie_error_t bowie_err_from_errno(int errno_value)
@@ -745,7 +765,9 @@ bowie_error_t bowie_err_from_errno(int errno_value)
     case EINVAL:         return BOWIE_ERR_INVAL;
     case ENOMEM:         return BOWIE_ERR_NOMEM;
     case EAGAIN:         return BOWIE_ERR_AGAIN;
+#if EWOULDBLOCK != EAGAIN
     case EWOULDBLOCK:    return BOWIE_ERR_WOULD_BLOCK;
+#endif
     case ETIMEDOUT:      return BOWIE_ERR_TIMEOUT;
     case ECONNREFUSED:   return BOWIE_ERR_CONN_REFUSED;
     case ECONNRESET:     return BOWIE_ERR_CONN_RESET;
@@ -765,7 +787,11 @@ int bowie_err_to_errno(bowie_error_t err)
     case BOWIE_ERR_INVAL:        return EINVAL;
     case BOWIE_ERR_NOMEM:        return ENOMEM;
     case BOWIE_ERR_AGAIN:        return EAGAIN;
+#if EWOULDBLOCK != EAGAIN
     case BOWIE_ERR_WOULD_BLOCK:  return EWOULDBLOCK;
+#else
+    case BOWIE_ERR_WOULD_BLOCK:  return EAGAIN;
+#endif
     case BOWIE_ERR_TIMEOUT:      return ETIMEDOUT;
     case BOWIE_ERR_CONN_REFUSED: return ECONNREFUSED;
     case BOWIE_ERR_CONN_RESET:   return ECONNRESET;
