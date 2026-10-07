@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -73,7 +73,7 @@
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <string.h>          memset, strlen, memcpy
+ *   <string.h>          memset
  *   "bowie/config.h"    the structure and the declarations
  *   "bowie/err.h"       error codes
  * ============================================================================
@@ -93,8 +93,8 @@
  * value is set here.
  */
 
-#define BOWIE_DEFAULT_GRANT_LIFETIME_SEC   3600u
-#define BOWIE_DEFAULT_CONNECT_TIMEOUT_MS  30000u
+#define BOWIE_DEFAULT_GRANT_LIFETIME_SEC    3600u
+#define BOWIE_DEFAULT_CONNECT_TIMEOUT_MS   30000u
 #define BOWIE_DEFAULT_OPERATION_TIMEOUT_MS 10000u
 
 bowie_error_t bowie_config_defaults(bowie_config_t *cfg)
@@ -143,12 +143,12 @@ bowie_error_t bowie_config_defaults(bowie_config_t *cfg)
      * timeouts. Worker threads default to 0, which the platform
      * interprets as "pick a number".
      */
-    cfg->log_level          = BOWIE_LOG_INFO;
-    cfg->max_peers          = BOWIE_MAX_PEERS;
-    cfg->max_sessions       = BOWIE_MAX_SESSIONS;
-    cfg->connect_timeout_ms = BOWIE_DEFAULT_CONNECT_TIMEOUT_MS;
+    cfg->log_level            = BOWIE_LOG_INFO;
+    cfg->max_peers            = BOWIE_MAX_PEERS;
+    cfg->max_sessions         = BOWIE_MAX_SESSIONS;
+    cfg->connect_timeout_ms   = BOWIE_DEFAULT_CONNECT_TIMEOUT_MS;
     cfg->operation_timeout_ms = BOWIE_DEFAULT_OPERATION_TIMEOUT_MS;
-    cfg->worker_threads     = 0;
+    cfg->worker_threads       = 0;
 
     return BOWIE_OK;
 }
@@ -241,10 +241,17 @@ bowie_error_t bowie_config_validate(const bowie_config_t *cfg)
     /*
      * The bootstrap peer array is an array of fixed-size
      * strings. Every entry that is within bootstrap_peer_count
-     * must be NUL-terminated.
+     * must be NUL-terminated within its slot.
      */
     if (cfg->bootstrap_peer_count > BOWIE_CONFIG_PEER_MAX) {
         return BOWIE_ERR_RANGE;
+    }
+
+    for (size_t i = 0u; i < cfg->bootstrap_peer_count; i++) {
+        if (cfg->bootstrap_peers[i][BOWIE_CONFIG_PEER_MAX_LEN - 1u]
+            != '\0') {
+            return BOWIE_ERR_NOT_TERMINATED;
+        }
     }
 
     /*
@@ -340,11 +347,16 @@ bowie_error_t bowie_config_normalize(bowie_config_t *cfg)
 
     /*
      * Bootstrap peers: clamp the count and terminate every
-     * entry. This is defensive; a caller that respects the
-     * struct layout never needs it.
+     * entry within the count. This is defensive; a caller that
+     * respects the struct layout never needs it.
      */
     if (cfg->bootstrap_peer_count > BOWIE_CONFIG_PEER_MAX) {
         cfg->bootstrap_peer_count = BOWIE_CONFIG_PEER_MAX;
+    }
+
+    for (size_t i = 0u; i < cfg->bootstrap_peer_count; i++) {
+        cfg->bootstrap_peers[i][BOWIE_CONFIG_PEER_MAX_LEN - 1u]
+            = '\0';
     }
 
     /*
