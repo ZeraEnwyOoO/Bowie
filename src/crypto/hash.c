@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -38,44 +38,95 @@
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The implementation is a thin wrapper over OpenSSL. The
- * OpenSSL one-shot functions (SHA256, SHA1, MD5, HMAC) are
- * used directly. They take a complete buffer and produce a
- * complete digest; there is no context to manage.
+ * The implementation uses the EVP interface, not the low-level
+ * per-algorithm functions. On OpenSSL 3.0 the low-level
+ * functions (MD5, SHA1, SHA256) are deprecated; the EVP
+ * interface is the supported one. The EVP interface also
+ * covers HMAC, so all four functions in this file use the
+ * same API shape.
  *
- * OpenSSL's return values are checked. The one-shot functions
- * return NULL on failure; the wrapper converts that to
- * BOWIE_ERR_CRYPTO. In practice a NULL return means the output
- * pointer was NULL, which the wrapper already rejects, so the
- * conversion is a defensive measure.
+ * EVP_MD_CTX is allocated and freed for every call. The
+ * allocation is small and the hash functions are not on a hot
+ * path; the clarity of the one-shot shape is worth the cost.
+ * A future version that needs to hash many small buffers in a
+ * loop can cache the context, but that is not a requirement
+ * today.
  *
  * A data or key pointer with a length of zero is allowed. The
- * OpenSSL functions accept it. The wrapper does not reject it;
- * a caller that hashes an empty buffer gets the hash of the
+ * EVP functions accept it. The wrapper does not reject it; a
+ * caller that hashes an empty buffer gets the hash of the
  * empty buffer, which is well-defined.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <openssl/sha.h>          SHA1, SHA256
- *   <openssl/md5.h>          MD5
- *   <openssl/hmac.h>         HMAC
- *   <openssl/evp.h>          EVP_MAX_MD_SIZE
+ *   <openssl/evp.h>          EVP_MD_CTX, EVP_DigestInit_ex,
+ *                            EVP_DigestUpdate, EVP_DigestFinal_ex,
+ *                            EVP_MD_CTX_new, EVP_MD_CTX_free,
+ *                            EVP_sha256, EVP_sha1, EVP_md5,
+ *                            EVP_MAC, EVP_MAC_CTX,
+ *                            EVP_MAC_fetch, EVP_MAC_init,
+ *                            EVP_MAC_update, EVP_MAC_final,
+ *                            EVP_MAC_CTX_free
+ *   <openssl/core_names.h>   OSSL_MAC_PARAM_DIGEST
  *   "bowie/err.h"            error codes
- *   "bowie/crypto/hash.h"    the declarations
+ *   "crypto/hash.h"          the declarations
  * ============================================================================
  */
 
-#include <openssl/sha.h>
-#include <openssl/md5.h>
-#include <openssl/hmac.h>
 #include <openssl/evp.h>
+#include <openssl/core_names.h>
 
 #include <string.h>
 
 #include "bowie/err.h"
 #include "crypto/hash.h"
+
+/*
+ * ============================================================================
+ * INTERNAL — DIGEST HELPER
+ * ============================================================================
+ *
+ * Compute a digest with EVP. The caller supplies the digest
+ * algorithm and the output length. The output buffer must be
+ * at least out_len bytes.
+ */
+
+static bowie_error_t digest_evp(const EVP_MD *md,
+                                 const void *data, size_t len,
+                                 unsigned char *out,
+                                 unsigned int out_len)
+{
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (ctx == NULL) {
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    if (EVP_DigestInit_ex(ctx, md, NULL) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    if (EVP_DigestUpdate(ctx, data, len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    unsigned int got = 0u;
+    if (EVP_DigestFinal_ex(ctx, out, &got) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    if (got != out_len) {
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    return BOWIE_OK;
+}
 
 /*
  * ============================================================================
@@ -93,14 +144,8 @@ bowie_error_t bowie_hash_sha256(const void *data, size_t len,
         return BOWIE_ERR_NULL_ARG;
     }
 
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-
-    if (SHA256((const unsigned char *)data, len, digest) == NULL) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    memcpy(out->bytes, digest, SHA256_DIGEST_LENGTH);
-    return BOWIE_OK;
+    return digest_evp(EVP_sha256(), data, len,
+                      out->bytes, BOWIE_HASH_SHA256_LEN);
 }
 
 /*
@@ -119,14 +164,8 @@ bowie_error_t bowie_hash_sha1(const void *data, size_t len,
         return BOWIE_ERR_NULL_ARG;
     }
 
-    unsigned char digest[SHA_DIGEST_LENGTH];
-
-    if (SHA1((const unsigned char *)data, len, digest) == NULL) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    memcpy(out->bytes, digest, SHA_DIGEST_LENGTH);
-    return BOWIE_OK;
+    return digest_evp(EVP_sha1(), data, len,
+                      out->bytes, BOWIE_HASH_SHA1_LEN);
 }
 
 /*
@@ -145,20 +184,18 @@ bowie_error_t bowie_hash_md5(const void *data, size_t len,
         return BOWIE_ERR_NULL_ARG;
     }
 
-    unsigned char digest[MD5_DIGEST_LENGTH];
-
-    if (MD5((const unsigned char *)data, len, digest) == NULL) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    memcpy(out->bytes, digest, MD5_DIGEST_LENGTH);
-    return BOWIE_OK;
+    return digest_evp(EVP_md5(), data, len,
+                      out->bytes, BOWIE_HASH_MD5_LEN);
 }
 
 /*
  * ============================================================================
  * HMAC-SHA256
  * ============================================================================
+ *
+ * The EVP_MAC interface is the OpenSSL 3.0 replacement for the
+ * HMAC() function. It is used here with the "HMAC" algorithm
+ * and the SHA-256 digest.
  */
 
 bowie_error_t bowie_hash_hmac_sha256(const void *key, size_t key_len,
@@ -175,17 +212,47 @@ bowie_error_t bowie_hash_hmac_sha256(const void *key, size_t key_len,
         return BOWIE_ERR_NULL_ARG;
     }
 
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int  digest_len = 0u;
-
-    if (HMAC(EVP_sha256(),
-             key, (int)key_len,
-             (const unsigned char *)data, data_len,
-             digest, &digest_len) == NULL) {
+    EVP_MAC *mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    if (mac == NULL) {
         return BOWIE_ERR_CRYPTO;
     }
 
-    if (digest_len != BOWIE_HASH_SHA256_LEN) {
+    EVP_MAC_CTX *ctx = EVP_MAC_CTX_new(mac);
+    if (ctx == NULL) {
+        EVP_MAC_free(mac);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    OSSL_PARAM params[2];
+    params[0] = OSSL_PARAM_construct_utf8_string(
+        OSSL_MAC_PARAM_DIGEST, "SHA256", 0);
+    params[1] = OSSL_PARAM_construct_end();
+
+    if (EVP_MAC_init(ctx, key, key_len, params) != 1) {
+        EVP_MAC_CTX_free(ctx);
+        EVP_MAC_free(mac);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    if (EVP_MAC_update(ctx, data, data_len) != 1) {
+        EVP_MAC_CTX_free(ctx);
+        EVP_MAC_free(mac);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    size_t out_len = 0u;
+
+    if (EVP_MAC_final(ctx, digest, &out_len, sizeof(digest)) != 1) {
+        EVP_MAC_CTX_free(ctx);
+        EVP_MAC_free(mac);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    EVP_MAC_CTX_free(ctx);
+    EVP_MAC_free(mac);
+
+    if (out_len != BOWIE_HASH_SHA256_LEN) {
         return BOWIE_ERR_CRYPTO;
     }
 
