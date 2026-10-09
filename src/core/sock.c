@@ -76,10 +76,12 @@
  *
  * The send and receive functions return a long. The sign
  * distinguishes a byte count from an error code: a
- * non-negative return is a byte count, a negative return is a
- * negated bowie_error_t. This is the same shape as the POSIX
- * read and write functions, with a typed error instead of
- * errno.
+ * non-negative return is a byte count, a negative return is
+ * a bowie_error_t. Every bowie_error_t is already negative,
+ * so the conversion is a direct cast. The function does NOT
+ * negate the value; a negation would turn the negative error
+ * code into a positive number, which a caller would read as
+ * a byte count.
  *
  * A signal interruption (EINTR) is reported as BOWIE_ERR_AGAIN,
  * which the caller can retry. The function does not retry
@@ -94,8 +96,7 @@
  *   <sys/socket.h>                socket, bind, sendto, recvfrom,
  *                                 getsockname, setsockopt
  *   <netinet/in.h>                sockaddr_in, sockaddr_in6
- *   <arpa/inet.h>                 not used directly; included
- *                                 for the socket address family
+ *   <arpa/inet.h>                 socket address family
  *                                 definitions on some systems
  *   <fcntl.h>                     fcntl, O_NONBLOCK
  *   <unistd.h>                    close
@@ -387,10 +388,10 @@ long bowie_sock_sendto(int fd, const bowie_addr_t *to,
                        const void *buf, size_t n)
 {
     if (fd == BOWIE_SOCK_INVALID) {
-        return -(long)BOWIE_ERR_INVAL;
+        return (long)BOWIE_ERR_INVAL;
     }
     if (to == NULL || buf == NULL) {
-        return -(long)BOWIE_ERR_NULL_ARG;
+        return (long)BOWIE_ERR_NULL_ARG;
     }
     if (n == 0u) {
         return 0L;
@@ -399,13 +400,13 @@ long bowie_sock_sendto(int fd, const bowie_addr_t *to,
     struct sockaddr_storage ss;
     socklen_t ss_len = 0;
     if (addr_to_sockaddr(to, &ss, &ss_len) != 0) {
-        return -(long)BOWIE_ERR_INVAL;
+        return (long)BOWIE_ERR_INVAL;
     }
 
     ssize_t sent = sendto(fd, buf, n, 0,
                           (const struct sockaddr *)&ss, ss_len);
     if (sent < 0) {
-        return -(long)errno_to_bowie(errno);
+        return (long)errno_to_bowie(errno);
     }
     return (long)sent;
 }
@@ -414,10 +415,10 @@ long bowie_sock_recvfrom(int fd, bowie_addr_t *from,
                          void *buf, size_t cap)
 {
     if (fd == BOWIE_SOCK_INVALID) {
-        return -(long)BOWIE_ERR_INVAL;
+        return (long)BOWIE_ERR_INVAL;
     }
     if (buf == NULL) {
-        return -(long)BOWIE_ERR_NULL_ARG;
+        return (long)BOWIE_ERR_NULL_ARG;
     }
     if (cap == 0u) {
         return 0L;
@@ -429,7 +430,7 @@ long bowie_sock_recvfrom(int fd, bowie_addr_t *from,
     ssize_t got = recvfrom(fd, buf, cap, 0,
                            (struct sockaddr *)&ss, &ss_len);
     if (got < 0) {
-        return -(long)errno_to_bowie(errno);
+        return (long)errno_to_bowie(errno);
     }
 
     if (from != NULL && got > 0) {
