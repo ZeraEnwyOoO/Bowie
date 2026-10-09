@@ -1,5 +1,4 @@
-
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -71,6 +70,30 @@
  * for plaintext. The EVP functions accept it.
  *
  * ----------------------------------------------------------------------------
+ * Length handling
+ * ----------------------------------------------------------------------------
+ *
+ * OpenSSL's EVP interface takes the input and output length as
+ * an int. Bowie's API takes the length as a size_t. The
+ * conversion from size_t to int is not safe unless the value
+ * fits in an int.
+ *
+ * Every function in this file checks that every length it is
+ * about to pass to OpenSSL fits in an int before the call. A
+ * length that does not fit is rejected with
+ * BOWIE_ERR_TOO_LARGE. This is a deliberate limit: a single
+ * cipher operation of more than 2 GiB is not a use case Bowie
+ * has, and the check prevents a silent truncation that would
+ * produce a wrong result.
+ *
+ * The output length in the GCM encrypt function is
+ * plaintext_len + BOWIE_CIPHER_TAG_LEN. The addition is
+ * checked for size_t overflow before the sum is used. A
+ * plaintext_len close to SIZE_MAX would otherwise wrap, and
+ * the buffer size check would pass for a buffer that is
+ * actually too small.
+ *
+ * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
@@ -80,6 +103,7 @@
  *                                EVP_DecryptUpdate, EVP_EncryptFinal_ex,
  *                                EVP_DecryptFinal_ex, EVP_CIPHER_CTX_ctrl,
  *                                EVP_CIPHER_CTX_new, EVP_CIPHER_CTX_free
+ *   <limits.h>                   INT_MAX
  *   <string.h>                   memcpy
  *   "bowie/err.h"                error codes
  *   "crypto/cipher.h"            the declarations
@@ -88,10 +112,26 @@
 
 #include <openssl/evp.h>
 
+#include <limits.h>
 #include <string.h>
 
 #include "bowie/err.h"
 #include "crypto/cipher.h"
+
+/*
+ * ============================================================================
+ * INTERNAL — LENGTH CHECK
+ * ============================================================================
+ *
+ * OpenSSL's EVP interface takes input and output lengths as
+ * int. A size_t that does not fit in an int is rejected before
+ * the call.
+ *
+ * The check is a single comparison. It is written as a macro
+ * so that the intent is clear at the call site.
+ */
+
+#define BOWIE_CIPHER_FITS_INT(n) ((n) <= (size_t)INT_MAX)
 
 /*
  * ============================================================================
@@ -119,9 +159,23 @@ bowie_error_t bowie_cipher_aes256_gcm_encrypt(
     }
 
     /*
-     * The output is the ciphertext followed by the tag. The
-     * required size is plaintext_len + 16.
+     * OpenSSL takes the length as an int. Reject any length
+     * that does not fit before the multiplication and the
+     * buffer size check.
      */
+    if (!BOWIE_CIPHER_FITS_INT(plaintext_len) ||
+        !BOWIE_CIPHER_FITS_INT(aad_len)) {
+        return BOWIE_ERR_TOO_LARGE;
+    }
+
+    /*
+     * The output is the ciphertext followed by the tag. The
+     * required size is plaintext_len + 16. The addition is
+     * checked for size_t overflow before the sum is used.
+     */
+    if (plaintext_len > SIZE_MAX - BOWIE_CIPHER_TAG_LEN) {
+        return BOWIE_ERR_TOO_LARGE;
+    }
     size_t required = plaintext_len + BOWIE_CIPHER_TAG_LEN;
     if (out_cap < required) {
         return BOWIE_ERR_TOO_SMALL;
@@ -152,7 +206,6 @@ bowie_error_t bowie_cipher_aes256_gcm_encrypt(
 
     int len = 0;
 
-    /* AAD (not encrypted, but authenticated). */
     if (aad_len > 0u) {
         if (EVP_EncryptUpdate(ctx, NULL, &len,
                                (const unsigned char *)aad,
@@ -162,7 +215,6 @@ bowie_error_t bowie_cipher_aes256_gcm_encrypt(
         }
     }
 
-    /* Plaintext. */
     if (plaintext_len > 0u) {
         if (EVP_EncryptUpdate(ctx, out, &len,
                                (const unsigned char *)plaintext,
@@ -176,7 +228,6 @@ bowie_error_t bowie_cipher_aes256_gcm_encrypt(
 
     size_t written = (size_t)len;
 
-    /* Final block. For GCM this produces no additional bytes. */
     int final_len = 0;
     if (EVP_EncryptFinal_ex(ctx, out + written, &final_len) != 1) {
         EVP_CIPHER_CTX_free(ctx);
@@ -184,7 +235,6 @@ bowie_error_t bowie_cipher_aes256_gcm_encrypt(
     }
     written += (size_t)final_len;
 
-    /* Tag. */
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG,
                              BOWIE_CIPHER_TAG_LEN,
                              out + written) != 1) {
@@ -224,11 +274,11 @@ bowie_error_t bowie_cipher_aes256_gcm_decrypt(
         return BOWIE_ERR_NULL_ARG;
     }
 
-    /*
-     * The input is the ciphertext followed by the tag. The
-     * minimum length is the tag length; anything shorter is
-     * malformed.
-     */
+    if (!BOWIE_CIPHER_FITS_INT(ciphertext_len) ||
+        !BOWIE_CIPHER_FITS_INT(aad_len)) {
+        return BOWIE_ERR_TOO_LARGE;
+    }
+
     if (ciphertext_len < BOWIE_CIPHER_TAG_LEN) {
         return BOWIE_ERR_CRYPTO;
     }
@@ -264,7 +314,6 @@ bowie_error_t bowie_cipher_aes256_gcm_decrypt(
 
     int len = 0;
 
-    /* AAD. */
     if (aad_len > 0u) {
         if (EVP_DecryptUpdate(ctx, NULL, &len,
                                (const unsigned char *)aad,
@@ -274,7 +323,6 @@ bowie_error_t bowie_cipher_aes256_gcm_decrypt(
         }
     }
 
-    /* Ciphertext (without tag). */
     if (ct_len > 0u) {
         if (EVP_DecryptUpdate(ctx, out, &len,
                                (const unsigned char *)ciphertext,
@@ -288,7 +336,6 @@ bowie_error_t bowie_cipher_aes256_gcm_decrypt(
 
     size_t written = (size_t)len;
 
-    /* Set the expected tag before the final call. */
     const unsigned char *tag =
         (const unsigned char *)ciphertext + ct_len;
 
@@ -302,12 +349,6 @@ bowie_error_t bowie_cipher_aes256_gcm_decrypt(
     int final_len = 0;
     if (EVP_DecryptFinal_ex(ctx, out + written, &final_len) != 1) {
         EVP_CIPHER_CTX_free(ctx);
-        /*
-         * The tag did not verify. The output buffer may have
-         * been written to by EVP_DecryptUpdate above; the
-         * caller must not use it. The wrapper reports the
-         * failure with BOWIE_ERR_CRYPTO.
-         */
         return BOWIE_ERR_CRYPTO;
     }
     written += (size_t)final_len;
@@ -338,6 +379,11 @@ bowie_error_t bowie_cipher_aes256_ctr_encrypt(
     if (plaintext == NULL && plaintext_len > 0u) {
         return BOWIE_ERR_NULL_ARG;
     }
+
+    if (!BOWIE_CIPHER_FITS_INT(plaintext_len)) {
+        return BOWIE_ERR_TOO_LARGE;
+    }
+
     if (out_cap < plaintext_len) {
         return BOWIE_ERR_TOO_SMALL;
     }
@@ -399,6 +445,11 @@ bowie_error_t bowie_cipher_aes256_ctr_decrypt(
     if (ciphertext == NULL && ciphertext_len > 0u) {
         return BOWIE_ERR_NULL_ARG;
     }
+
+    if (!BOWIE_CIPHER_FITS_INT(ciphertext_len)) {
+        return BOWIE_ERR_TOO_LARGE;
+    }
+
     if (out_cap < ciphertext_len) {
         return BOWIE_ERR_TOO_SMALL;
     }
