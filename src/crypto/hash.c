@@ -75,7 +75,7 @@
 #include <string.h>
 
 #include "bowie/err.h"
-#include "Bowie/include/crypto/hash.h"
+#include "crypto/hash.h"
 
 /*
  * ============================================================================
