@@ -46,6 +46,7 @@
 CC      ?= cc
 AR      ?= ar
 RANLIB  ?= ranlib
+PKG_CONFIG ?= pkg-config
 
 # ----------------------------------------------------------------------------
 # Flags
@@ -64,13 +65,25 @@ CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 CFLAGS  += -Itests
 
+# External dependency: OpenSSL
+#
+# The crypto layer is backed by OpenSSL. The flags are queried
+# from pkg-config so that the build works on a system where
+# OpenSSL is installed in a non-standard prefix.
+
+OPENSSL_CFLAGS := $(shell $(PKG_CONFIG) --cflags openssl 2>/dev/null)
+OPENSSL_LIBS   := $(shell $(PKG_CONFIG) --libs openssl 2>/dev/null)
+
+CFLAGS  += $(OPENSSL_CFLAGS)
+LDLIBS  += $(OPENSSL_LIBS)
+
 # Check framework on Linux.
 #
 # -lsubunit is needed only when Check was built with the
 # subunit protocol. It is not present on every system, so it
 # is not included by default. If your system has it and the
 # link fails without it, add it back to LDLIBS.
-LDLIBS  := -lcheck -lm -lpthread -lrt
+LDLIBS  += -lcheck -lm -lpthread -lrt
 
 # ----------------------------------------------------------------------------
 # Directories
@@ -102,7 +115,10 @@ LIB_SRCS := \
     src/core/mem.c \
     src/core/bytes.c \
     src/core/time.c \
-    src/core/rand.c
+    src/core/rand.c \
+    src/core/log.c \
+    src/core/sock.c \
+    src/crypto/hash.c
 
 # Library objects. The path is rewritten so that the object tree
 # mirrors the source tree under build/obj/.
@@ -128,7 +144,10 @@ UNIT_TEST_SRCS := \
     tests/unit/core/test_mem.c \
     tests/unit/core/test_bytes.c \
     tests/unit/core/test_time.c \
-    tests/unit/core/test_rand.c
+    tests/unit/core/test_rand.c \
+    tests/unit/core/test_log.c \
+    tests/unit/core/test_sock.c \
+    tests/unit/crypto/test_hash.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
