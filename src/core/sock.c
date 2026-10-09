@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -56,8 +56,11 @@
  *   - addr_from_sockaddr: reads a sockaddr_storage into a
  *     bowie_addr_t.
  *
- * Both helpers understand BOWIE_AF_INET and BOWIE_AF_INET6.
- * A different family is rejected before the platform call.
+ * Both helpers use the family mapping helpers
+ * (family_to_platform, family_from_platform) so that the
+ * mapping between bowie_af_t and the platform's AF_* values
+ * lives in one place. A change to the mapping is a change to
+ * two functions, not to every caller.
  *
  * The port is stored in host byte order in bowie_addr_t. The
  * conversion to and from network byte order happens in the
@@ -151,6 +154,10 @@ static bowie_error_t errno_to_bowie(int e)
  * ============================================================================
  * FAMILY MAPPING
  * ============================================================================
+ *
+ * Two functions map between the bowie_af_t enumeration and the
+ * platform's AF_* values. The mapping lives here and nowhere
+ * else.
  */
 
 static int family_to_platform(bowie_af_t family)
@@ -183,10 +190,15 @@ static int addr_to_sockaddr(const bowie_addr_t *addr,
 {
     memset(ss, 0, sizeof(*ss));
 
+    int pf = family_to_platform(addr->family);
+    if (pf < 0) {
+        return -1;
+    }
+
     switch (addr->family) {
     case BOWIE_AF_INET: {
         struct sockaddr_in *sin = (struct sockaddr_in *)ss;
-        sin->sin_family = AF_INET;
+        sin->sin_family = (sa_family_t)pf;
         sin->sin_port   = htons(addr->port);
         memcpy(&sin->sin_addr, addr->addr, 4u);
         *out_len = sizeof(*sin);
@@ -194,7 +206,7 @@ static int addr_to_sockaddr(const bowie_addr_t *addr,
     }
     case BOWIE_AF_INET6: {
         struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ss;
-        sin6->sin6_family = AF_INET6;
+        sin6->sin6_family = (sa_family_t)pf;
         sin6->sin6_port   = htons(addr->port);
         memcpy(&sin6->sin6_addr, addr->addr, 16u);
         *out_len = sizeof(*sin6);
@@ -208,22 +220,26 @@ static int addr_to_sockaddr(const bowie_addr_t *addr,
 static int addr_from_sockaddr(const struct sockaddr_storage *ss,
                               bowie_addr_t *out)
 {
-    switch (ss->ss_family) {
-    case AF_INET: {
+    bowie_af_t af = family_from_platform(ss->ss_family);
+    if (af == BOWIE_AF_UNSPEC) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->family = af;
+
+    switch (af) {
+    case BOWIE_AF_INET: {
         const struct sockaddr_in *sin =
             (const struct sockaddr_in *)ss;
-        memset(out, 0, sizeof(*out));
-        out->family = BOWIE_AF_INET;
-        out->port   = ntohs(sin->sin_port);
+        out->port = ntohs(sin->sin_port);
         memcpy(out->addr, &sin->sin_addr, 4u);
         return 0;
     }
-    case AF_INET6: {
+    case BOWIE_AF_INET6: {
         const struct sockaddr_in6 *sin6 =
             (const struct sockaddr_in6 *)ss;
-        memset(out, 0, sizeof(*out));
-        out->family = BOWIE_AF_INET6;
-        out->port   = ntohs(sin6->sin6_port);
+        out->port = ntohs(sin6->sin6_port);
         memcpy(out->addr, &sin6->sin6_addr, 16u);
         return 0;
     }
