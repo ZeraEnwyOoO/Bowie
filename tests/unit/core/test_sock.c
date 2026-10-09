@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -30,15 +30,14 @@
  * remote host, no receive from a remote host, and no
  * connection setup. The socket primitives are tested against
  * the local loopback address, which the operating system
- * provides without any network path. A test that depended on a
- * remote host would fail in a sandbox and would be testing the
- * sandbox, not the module.
+ * provides without any network path.
  *
- * The test suite creates real sockets. Each test that opens a
- * socket closes it before returning. A leak here would be
- * visible in the process's file descriptor table, but the
- * tests are short-lived and the process exits at the end of
- * the suite.
+ * The send and receive functions return a long. The sign
+ * distinguishes a byte count from an error code: a
+ * non-negative return is a byte count, a negative return is a
+ * bowie_error_t. Since every bowie_error_t is already
+ * negative, a failure return is compared to the error code
+ * directly, with no negation.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -161,7 +160,6 @@ END_TEST
 START_TEST(test_close_invalid_is_noop)
 {
     bowie_sock_close(BOWIE_SOCK_INVALID);
-    /* No crash. */
 }
 END_TEST
 
@@ -340,7 +338,7 @@ START_TEST(test_sendto_invalid_handle)
     ck_assert_int_eq(
         (int)bowie_sock_sendto(BOWIE_SOCK_INVALID, &addr,
                                "x", 1u),
-        -(int)BOWIE_ERR_INVAL);
+        (int)BOWIE_ERR_INVAL);
 }
 END_TEST
 
@@ -352,7 +350,7 @@ START_TEST(test_sendto_null_addr)
                      BOWIE_OK);
     ck_assert_int_eq(
         (int)bowie_sock_sendto(fd, NULL, "x", 1u),
-        -(int)BOWIE_ERR_NULL_ARG);
+        (int)BOWIE_ERR_NULL_ARG);
     bowie_sock_close(fd);
 }
 END_TEST
@@ -369,7 +367,7 @@ START_TEST(test_sendto_null_buf)
 
     ck_assert_int_eq(
         (int)bowie_sock_sendto(fd, &addr, NULL, 1u),
-        -(int)BOWIE_ERR_NULL_ARG);
+        (int)BOWIE_ERR_NULL_ARG);
     bowie_sock_close(fd);
 }
 END_TEST
@@ -403,7 +401,7 @@ START_TEST(test_recvfrom_invalid_handle)
     ck_assert_int_eq(
         (int)bowie_sock_recvfrom(BOWIE_SOCK_INVALID, NULL,
                                  buf, sizeof(buf)),
-        -(int)BOWIE_ERR_INVAL);
+        (int)BOWIE_ERR_INVAL);
 }
 END_TEST
 
@@ -415,7 +413,7 @@ START_TEST(test_recvfrom_null_buf)
                      BOWIE_OK);
     ck_assert_int_eq(
         (int)bowie_sock_recvfrom(fd, NULL, NULL, 16u),
-        -(int)BOWIE_ERR_NULL_ARG);
+        (int)BOWIE_ERR_NULL_ARG);
     bowie_sock_close(fd);
 }
 END_TEST
@@ -449,8 +447,15 @@ START_TEST(test_recvfrom_nonblocking_no_data)
 
     char buf[16];
     long got = bowie_sock_recvfrom(fd, NULL, buf, sizeof(buf));
-    ck_assert(got < 0);
-    ck_assert_int_eq((int)(-got), (int)BOWIE_ERR_AGAIN);
+
+    /*
+     * On a non-blocking socket with no data available, the
+     * platform returns EAGAIN (or EWOULDBLOCK, which is the
+     * same value). The wrapper maps it to BOWIE_ERR_AGAIN,
+     * which is negative. The return value is compared to the
+     * error code directly; there is no negation.
+     */
+    ck_assert_int_eq((int)got, (int)BOWIE_ERR_AGAIN);
 
     bowie_sock_close(fd);
 }
@@ -460,10 +465,6 @@ END_TEST
  * ============================================================================
  * LOOPBACK ROUND TRIP
  * ============================================================================
- *
- * A datagram sent to the local loopback address is received by
- * the same socket. This tests the send and receive paths
- * without involving the network stack.
  */
 
 START_TEST(test_loopback_roundtrip)
