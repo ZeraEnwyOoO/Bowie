@@ -26,6 +26,7 @@
 #   CFLAGS     compiler flags
 #   LDFLAGS    linker flags
 #   LDLIBS     libraries to link
+#   NAT_BACKEND  NAT backend to build (placeholder / libjuice / xury)
 #   V          verbose (V=1 to show full compile commands)
 #
 # ----------------------------------------------------------------------------
@@ -46,7 +47,6 @@
 CC      ?= cc
 AR      ?= ar
 RANLIB  ?= ranlib
-PKG_CONFIG ?= pkg-config
 
 # ----------------------------------------------------------------------------
 # Flags
@@ -65,17 +65,14 @@ CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 CFLAGS  += -Itests
 
-# External dependency: OpenSSL
-#
-# The crypto layer is backed by OpenSSL. The flags are queried
-# from pkg-config so that the build works on a system where
-# OpenSSL is installed in a non-standard prefix.
+# Header dependency generation.
+CFLAGS  += -MMD -MP
 
-OPENSSL_CFLAGS := $(shell $(PKG_CONFIG) --cflags openssl 2>/dev/null)
-OPENSSL_LIBS   := $(shell $(PKG_CONFIG) --libs openssl 2>/dev/null)
-
-CFLAGS  += $(OPENSSL_CFLAGS)
-LDLIBS  += $(OPENSSL_LIBS)
+# OpenSSL. The project depends on libcrypto for all crypto
+# operations. libssl is not needed; it is only required for TLS,
+# which Bowie does not use.
+CFLAGS  += $(shell pkg-config --cflags libcrypto)
+LDLIBS  += $(shell pkg-config --libs libcrypto)
 
 # Check framework on Linux.
 #
@@ -84,6 +81,36 @@ LDLIBS  += $(OPENSSL_LIBS)
 # is not included by default. If your system has it and the
 # link fails without it, add it back to LDLIBS.
 LDLIBS  += -lcheck -lm -lpthread -lrt
+
+# ----------------------------------------------------------------------------
+# NAT backend selection
+# ----------------------------------------------------------------------------
+#
+# The NAT layer is implemented by a backend. The backend is
+# selected at build time. The default is the placeholder, which
+# is built-in and has no external dependency.
+#
+# To build with a different backend:
+#
+#   make NAT_BACKEND=libjuice
+#   make NAT_BACKEND=xury
+
+NAT_BACKEND ?= placeholder
+
+ifeq ($(NAT_BACKEND),placeholder)
+NAT_SRCS :=
+NAT_LIBS :=
+else ifeq ($(NAT_BACKEND),libjuice)
+NAT_SRCS := src/nat_libjuice.c
+NAT_LIBS := -ljuice
+else ifeq ($(NAT_BACKEND),xury)
+NAT_SRCS := src/nat_xury.c
+NAT_LIBS := -lxury
+else
+$(error Unknown NAT_BACKEND: $(NAT_BACKEND). Use placeholder, libjuice, or xury.)
+endif
+
+LDLIBS += $(NAT_LIBS)
 
 # ----------------------------------------------------------------------------
 # Directories
@@ -242,12 +269,15 @@ help:
 	@echo
 	@echo "Variables:"
 	@echo
-	@echo "  CC       C compiler (default: cc)"
-	@echo "  V        set V=1 for verbose output"
+	@echo "  CC           C compiler (default: cc)"
+	@echo "  NAT_BACKEND  NAT backend (placeholder / libjuice / xury)"
+	@echo "  V            set V=1 for verbose output"
 	@echo
 	@echo "Examples:"
 	@echo
+	@echo "  make"
 	@echo "  make test"
+	@echo "  make NAT_BACKEND=libjuice"
 	@echo "  make clean && make test"
 	@echo "  make V=1 test"
 
@@ -280,7 +310,5 @@ endif
 #
 # The dependency files are included with -include, so that a
 # missing .d file is not an error on the first build.
-
-CFLAGS  += -MMD -MP
 
 -include $(LIB_OBJS:.o=.d)
