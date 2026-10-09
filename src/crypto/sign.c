@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -31,7 +31,8 @@
  *   - No encryption.
  *   - No certificate parsing.
  *   - No streaming API.
- *   - No allocation in the success path.
+ *   - No allocation in the success path beyond the EVP objects
+ *     that OpenSSL requires.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -43,12 +44,24 @@
  * EVP_PKEY_sign / EVP_PKEY_verify with no digest are the
  * recommended shape for a "pure" Ed25519 signature.
  *
- * An Ed25519 private key in OpenSSL is the 64-byte form: the
- * first 32 bytes are the seed, the second 32 bytes are the
- * public key. The function bowie_sign_ed25519_public_from_private
- * reads the second half directly. The sign and verify functions
- * use the full key through EVP_PKEY_new_raw_private_key and
- * EVP_PKEY_new_raw_public_key.
+ * An Ed25519 keypair has a 32-byte seed and a 32-byte public
+ * key. The seed is the private key. OpenSSL's
+ * EVP_PKEY_new_raw_private_key expects the 32-byte seed, not
+ * the 64-byte combined form.
+ *
+ * Bowie's canonical private key is the 64-byte form:
+ *
+ *     seed || public
+ *
+ * This form is what the PEM encoding produces and what most
+ * Ed25519 tools store. It is convenient for debugging and for
+ * storage. When the key is passed to OpenSSL, only the first
+ * 32 bytes (the seed) are used. The second 32 bytes are the
+ * public key, which OpenSSL derives from the seed.
+ *
+ * The public-from-private function reads the second 32 bytes
+ * directly. It does not call OpenSSL, because the bytes are
+ * already the public key.
  *
  * Every EVP_PKEY and EVP_MD_CTX is created and freed inside the
  * function. There is no global state. The functions are safe
@@ -75,7 +88,6 @@
  *                                EVP_DigestVerifyInit,
  *                                EVP_DigestVerify,
  *                                EVP_PKEY_ED25519
- *   <openssl/err.h>              ERR_clear_error (optional)
  *   <string.h>                   memcpy
  *   "bowie/err.h"                error codes
  *   "crypto/sign.h"              the declarations
@@ -107,9 +119,14 @@ bowie_error_t bowie_sign_ed25519(
         return BOWIE_ERR_NULL_ARG;
     }
 
+    /*
+     * OpenSSL's Ed25519 raw private key is 32 bytes (the
+     * seed). Bowie's canonical form is 64 bytes (seed ||
+     * public). Pass only the seed to OpenSSL.
+     */
     EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(
         EVP_PKEY_ED25519, NULL,
-        private_key->bytes, BOWIE_SIGN_PRIVATE_LEN);
+        private_key->bytes, BOWIE_SIGN_PUBLIC_LEN);
     if (pkey == NULL) {
         return BOWIE_ERR_CRYPTO;
     }
@@ -232,4 +249,4 @@ bowie_error_t bowie_sign_ed25519_public_from_private(
  * ============================================================================
  * END OF FILE
  * ============================================================================
- */ 
+ */
