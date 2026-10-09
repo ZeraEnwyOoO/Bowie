@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -38,6 +38,18 @@
  * truncated line, empty format).
  *
  * ----------------------------------------------------------------------------
+ * Compiler format checks
+ * ----------------------------------------------------------------------------
+ *
+ * The log module has its own format parser. Its specifier set
+ * is smaller than printf's, and it treats an unsupported
+ * specifier as literal text rather than an error. The
+ * compiler's printf-checking does not know this, so a few
+ * tests below would be rejected by -Wformat. The pragma below
+ * disables that check for this file only. The compiler still
+ * checks every other warning.
+ *
+ * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
@@ -55,6 +67,14 @@
 #include "bowie/config.h"
 #include "bowie/hooks.h"
 #include "core/internal/log.h"
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+#pragma GCC diagnostic ignored "-Wformat-zero-length"
+#pragma GCC diagnostic ignored "-Wformat-overflow"
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
 
 /*
  * ============================================================================
@@ -202,7 +222,7 @@ START_TEST(test_init_null_hooks_clears)
     bowie_log_init(&log, NULL, BOWIE_LOG_INFO);
 
     ck_assert_int_eq(log.level, BOWIE_LOG_INFO);
-    ck_assert_ptr_null(log.hook);
+    ck_assert(log.hook == NULL);
     ck_assert_ptr_null(log.userdata);
 }
 END_TEST
@@ -220,7 +240,7 @@ START_TEST(test_init_copies_hook_and_userdata)
     bowie_log_init(&log, &hooks, BOWIE_LOG_DEBUG);
 
     ck_assert_int_eq(log.level, BOWIE_LOG_DEBUG);
-    ck_assert_ptr_eq(log.hook, capture_hook);
+    ck_assert(log.hook == capture_hook);
     ck_assert_ptr_eq(log.userdata, &sentinel);
 }
 END_TEST
@@ -273,7 +293,6 @@ START_TEST(test_enabled_no_hook)
     bowie_log_t log;
     bowie_log_init(&log, NULL, BOWIE_LOG_DEBUG);
 
-    /* No hook; every level is disabled. */
     ck_assert(!bowie_log_enabled(&log, BOWIE_LOG_ERROR));
     ck_assert(!bowie_log_enabled(&log, BOWIE_LOG_DEBUG));
 }
@@ -288,11 +307,9 @@ START_TEST(test_enabled_with_hook_respects_level)
     bowie_log_t log;
     bowie_log_init(&log, &hooks, BOWIE_LOG_WARN);
 
-    /* At or below the current level: enabled. */
     ck_assert(bowie_log_enabled(&log, BOWIE_LOG_ERROR));
     ck_assert(bowie_log_enabled(&log, BOWIE_LOG_WARN));
 
-    /* Above the current level: disabled. */
     ck_assert(!bowie_log_enabled(&log, BOWIE_LOG_INFO));
     ck_assert(!bowie_log_enabled(&log, BOWIE_LOG_DEBUG));
     ck_assert(!bowie_log_enabled(&log, BOWIE_LOG_TRACE));
@@ -648,11 +665,6 @@ START_TEST(test_emit_truncates_long_line)
     bowie_log_init(&log, &hooks, BOWIE_LOG_DEBUG);
     capture_reset();
 
-    /*
-     * A line longer than the buffer. The captured line must
-     * be exactly BOWIE_LOG_LINE_MAX - 1 characters, and the
-     * hook must have been called.
-     */
     char big[BOWIE_LOG_LINE_MAX + 64];
     for (size_t i = 0u; i < sizeof(big) - 1u; i++) {
         big[i] = 'x';
@@ -757,3 +769,7 @@ int main(void)
 
     return (failed == 0) ? 0 : 1;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
