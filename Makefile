@@ -26,7 +26,7 @@
 #   CFLAGS       compiler flags
 #   LDFLAGS      linker flags
 #   LDLIBS       libraries to link
-#   NAT_BACKEND  NAT backend (placeholder / libjuice / xury)
+#   NAT_BACKEND  NAT backend to build (placeholder / libjuice / xury)
 #   V            verbose (V=1 to show full compile commands)
 #
 # ----------------------------------------------------------------------------
@@ -71,18 +71,8 @@ CFLAGS  += -MMD -MP
 # OpenSSL. The project depends on libcrypto for all crypto
 # operations. libssl is not needed; it is only required for TLS,
 # which Bowie does not use.
-#
-# The flags are taken from pkg-config when it is available. When
-# it is not, the standard -lcrypto is used directly.
-PKG_CONFIG ?= pkg-config
-
-ifeq ($(shell $(PKG_CONFIG) --exists libcrypto && echo yes),yes)
-CFLAGS  += $(shell $(PKG_CONFIG) --cflags libcrypto)
-CRYPTO_LIBS := $(shell $(PKG_CONFIG) --libs libcrypto)
-else
-CFLAGS  += -I/usr/include
-CRYPTO_LIBS := -lcrypto
-endif
+CFLAGS  += $(shell pkg-config --cflags libcrypto)
+LDLIBS  += $(shell pkg-config --libs libcrypto)
 
 # Check framework on Linux.
 #
@@ -90,7 +80,6 @@ endif
 # subunit protocol. It is not present on every system, so it
 # is not included by default. If your system has it and the
 # link fails without it, add it back to LDLIBS.
-LDLIBS  += $(CRYPTO_LIBS)
 LDLIBS  += -lcheck -lm -lpthread -lrt
 
 # ----------------------------------------------------------------------------
@@ -156,7 +145,10 @@ LIB_SRCS := \
     src/core/rand.c \
     src/core/log.c \
     src/core/sock.c \
-    src/crypto/hash.c
+    src/crypto/hash.c \
+    src/crypto/cipher.c \
+    src/crypto/sign.c \
+    src/crypto/keypair.c
 
 # Library objects. The path is rewritten so that the object tree
 # mirrors the source tree under build/obj/.
@@ -185,7 +177,10 @@ UNIT_TEST_SRCS := \
     tests/unit/core/test_rand.c \
     tests/unit/core/test_log.c \
     tests/unit/core/test_sock.c \
-    tests/unit/crypto/test_hash.c
+    tests/unit/crypto/test_hash.c \
+    tests/unit/crypto/test_cipher.c \
+    tests/unit/crypto/test_sign.c \
+    tests/unit/crypto/test_keypair.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
