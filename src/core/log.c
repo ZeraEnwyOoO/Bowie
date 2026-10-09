@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -79,6 +79,12 @@
  *
  * The emit function checks the level before formatting. A line
  * below the current level costs one comparison and one return.
+ *
+ * BOWIE_LOG_NONE has a special meaning: it disables logging
+ * entirely. A context whose level is NONE emits nothing. A
+ * message whose level is NONE is never emitted. The two checks
+ * are made in bowie_log_enabled before the level comparison,
+ * so a NONE context or a NONE message short-circuits.
  *
  * The parser uses snprintf for integer formatting. This is
  * slower than a hand-rolled integer-to-string, but the log path
@@ -197,6 +203,20 @@ int bowie_log_enabled(const bowie_log_t *log, bowie_log_level_t level)
     if (log->hook == NULL) {
         return 0;
     }
+
+    /*
+     * BOWIE_LOG_NONE means "no logging". A context at NONE
+     * emits nothing, and a message at NONE is never emitted.
+     * Both checks are made before the level comparison, so a
+     * NONE context or a NONE message short-circuits.
+     */
+    if (log->level == BOWIE_LOG_NONE) {
+        return 0;
+    }
+    if (level == BOWIE_LOG_NONE) {
+        return 0;
+    }
+
     return (log->level >= level) ? 1 : 0;
 }
 
