@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -71,17 +71,35 @@
  * expected behavior for a monotonic clock used for elapsed
  * time.
  *
- * Neither function can fail in a way that a caller can handle.
- * clock_gettime returns -1 only for a clock id that does not
- * exist or a timespec pointer that is NULL; both are
- * programming errors, not runtime failures. The function does
- * not check the return value, because there is no sensible
- * error to return and no sensible recovery.
+ * ----------------------------------------------------------------------------
+ * Clock failure handling
+ * ----------------------------------------------------------------------------
  *
- * If clock_gettime is not available at link time, the build
- * fails. That is the correct behavior: a platform without a
- * working monotonic clock cannot support Bowie's timing
- * requirements.
+ * clock_gettime returns 0 on success and -1 on failure. The
+ * two failure modes are:
+ *
+ *   - EINVAL: the clock id is not supported. This is a
+ *     build-time problem, not a runtime one; a platform that
+ *     does not have the clock cannot be used.
+ *
+ *   - EFAULT: the timespec pointer is invalid. This cannot
+ *     happen with a stack-allocated timespec.
+ *
+ * Neither failure mode is recoverable at the call site. The
+ * functions do not have a way to report an error, because
+ * their return types are unsigned. The implementation
+ * therefore does not call clock_gettime blindly and then read
+ * an uninitialized timespec; it initializes the timespec to
+ * zero before the call, so that a failure produces a defined
+ * value (zero) instead of undefined behavior.
+ *
+ * A caller that needs to distinguish "the clock failed" from
+ * "the clock read zero" must call clock_gettime directly.
+ * This module does not provide that distinction, because no
+ * caller in Bowie needs it. A monotonic clock that reads zero
+ * is still a monotonic clock; the only consequence is that a
+ * deadline computed from it is wrong, which is the same
+ * consequence as a clock that read a wrong value.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -106,16 +124,17 @@
 
 bowie_mtime_t bowie_time_monotonic_ms(void)
 {
-    struct timespec ts;
-
     /*
-     * CLOCK_MONOTONIC is guaranteed not to jump backwards. It
-     * is the clock to use for deadlines and timeouts.
+     * The timespec is initialized to zero before the call.
+     * If clock_gettime fails, the function returns zero
+     * instead of reading an uninitialized value. Zero is a
+     * defined result; an uninitialized read is not.
      *
-     * The return value is ignored. A failure here would mean
-     * the clock id does not exist, which is a build-time
-     * problem, not a runtime one.
+     * CLOCK_MONOTONIC is guaranteed not to jump backwards.
+     * It is the clock to use for deadlines and timeouts.
      */
+    struct timespec ts = { 0, 0 };
+
     (void)clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (uint64_t)ts.tv_sec * 1000u
@@ -130,14 +149,17 @@ bowie_mtime_t bowie_time_monotonic_ms(void)
 
 bowie_wtime_t bowie_time_wallclock_ms(void)
 {
-    struct timespec ts;
-
     /*
+     * The timespec is initialized to zero before the call.
+     * See the note in the monotonic function.
+     *
      * CLOCK_REALTIME follows the system's UTC time. It can
      * jump backwards or forwards when the clock is adjusted.
      * Use it for timestamps that are compared against an
      * external reference, not for elapsed time.
      */
+    struct timespec ts = { 0, 0 };
+
     (void)clock_gettime(CLOCK_REALTIME, &ts);
 
     return (uint64_t)ts.tv_sec * 1000u
