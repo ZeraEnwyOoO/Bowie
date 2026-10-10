@@ -21,62 +21,87 @@
  * BOWIE — CAPABILITIES
  * ============================================================================
  *
- * Capability model for Bowie peers.
+ * What a peer can do.
  *
- * A capability is a bit flag that describes what a peer can do
- * on the network: share Internet (SOURCE), receive it (CLIENT),
- * or forward packets (GATEWAY). Capabilities are advertised, not
- * assigned by role. A peer's deployment mode provides a preset,
- * but the caller may override it.
+ * A capability is a bit in a mask. A peer advertises the bits
+ * it can perform. The three bits are:
  *
- * The capability type and the functions that operate on it are
- * declared in bowie/config.h, because the configuration
- * structure carries a capability field and that field is part
- * of the locked public contract. This header exists so that the
- * net layer has a named owner for the capability model without
- * duplicating or moving the contract.
+ *   SOURCE   — the peer can share Internet.
+ *   CLIENT   — the peer can receive Internet.
+ *   GATEWAY  — the peer can forward packets.
+ *
+ * A peer may have any combination of the three. A laptop that
+ * both shares and receives has SOURCE | CLIENT. A router that
+ * shares has SOURCE | GATEWAY. A phone that only receives has
+ * CLIENT.
+ *
+ * The capability model replaces the older role model
+ * (DONOR / RECIPIENT / BOTH). The role model was deprecated in
+ * v2.1. This header is the public surface for the capability
+ * model.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No new types. The capability type is bowie_cap_t, declared
- *     in bowie/config.h.
- *   - No new functions. The capability functions are declared in
- *     bowie/config.h.
- *   - No policy. This header does not decide what a peer may do;
- *     it exposes the model that the configuration and permission
- *     layers use.
- *   - No allocation. Nothing here allocates.
- *   - No I/O. Nothing here performs I/O.
+ *   - No ownership. Capability is what a peer can do; it is
+ *     not who owns the peer.
+ *   - No permission. Capability is a self-description; it is
+ *     not authorization. A peer that advertises SOURCE still
+ *     needs a grant to serve a specific CLIENT.
+ *   - No policy. The header does not decide which combination
+ *     of capabilities is valid for a deployment mode. That is
+ *     the configuration module's concern.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The capability model is intentionally small. Three flags cover
- * the three roles a Bowie peer can play. A future version may
- * add flags, but only when a real requirement exists; the flag
- * space is 32 bits wide and no reservation is needed today.
+ * The capability enum is declared in bowie/config.h, because
+ * the configuration structure carries a capability mask. This
+ * header does not redeclare the enum; it includes config.h and
+ * adds the operations that are specific to the capability
+ * model.
  *
- * A peer with no capabilities set (BOWIE_CAP_NONE) is valid. It
- * can participate in the network but cannot share, receive, or
- * forward. A configuration with no capabilities is normalized
- * from the deployment mode.
+ * The operations are:
+ *
+ *   - Name lookup: turn a capability bit into a stable string
+ *     for a log line or a diagnostic.
+ *
+ *   - String parsing: turn a comma-separated list of names
+ *     into a mask.
+ *
+ *   - String formatting: turn a mask into a comma-separated
+ *     list of names.
+ *
+ * The names are the same as the enum constants without the
+ * BOWIE_CAP_ prefix: "source", "client", "gateway". The names
+ * are lower-case.
+ *
+ * A parse that encounters an unknown name reports the number
+ * of unknown names through an out pointer and continues. This
+ * lets a caller accept a list with unknown names and report
+ * them, rather than rejecting the whole list.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   "bowie/config.h"   bowie_cap_t, bowie_mode_t, bowie_cap_has,
- *                      bowie_cap_for_mode
+ *   <stdint.h>                    uint32_t
+ *   <stddef.h>                    size_t
+ *   "bowie/config.h"              bowie_cap_t, BOWIE_CAP_*
+ *   "bowie/err.h"                 bowie_error_t
  * ============================================================================
  */
 
 #ifndef BOWIE_NET_CAPABILITIES_H
 #define BOWIE_NET_CAPABILITIES_H
 
+#include <stdint.h>
+#include <stddef.h>
+
 #include "bowie/config.h"
+#include "bowie/err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,26 +109,108 @@ extern "C" {
 
 /*
  * ============================================================================
- * CAPABILITY MODEL
+ * NAME LOOKUP
  * ============================================================================
+ */
+
+/*
+ * Return a stable, lower-case name for a single capability.
  *
- * The capability type and the functions that operate on it are
- * declared in bowie/config.h. They are re-exported through this
- * header so that the net layer can include a single header for
- * the capability model.
+ * The returned pointer is to a static string and must not be
+ * freed. The string is never NULL.
  *
- * The re-export is a documentation convenience, not a contract
- * change. A caller that includes only bowie/config.h gets the
- * same declarations.
+ * A mask with more than one bit set returns "multiple". A mask
+ * of zero returns "none". An unknown bit returns "unknown".
  *
- * See bowie/config.h for:
+ * For a caller that wants the name of one bit, pass a mask
+ * with exactly one bit. For a caller that wants a list of
+ * names, use bowie_cap_mask_to_string.
+ */
+const char *bowie_cap_name(uint32_t mask);
+
+/*
+ * ============================================================================
+ * STRING FORMATTING
+ * ============================================================================
+ */
+
+/*
+ * Format a capability mask into a comma-separated list of
+ * names.
  *
- *   bowie_cap_t          the capability flag type
- *   bowie_cap_has()      true when a mask contains a flag
- *   bowie_cap_for_mode() preset mask for a deployment mode
+ * The names are written in a fixed order: source, client,
+ * gateway. The list is written into the caller's buffer and is
+ * NUL-terminated. A buffer that is too small is filled up to
+ * cap - 1 bytes and NUL-terminated.
  *
- * The deployment mode type, bowie_mode_t, is also declared in
- * bowie/config.h and is the source of the preset.
+ * A mask of zero is written as "none".
+ *
+ * Returns the number of bytes that would have been written,
+ * excluding the terminator, following snprintf semantics.
+ *
+ * Passing NULL for buf returns 0.
+ */
+int bowie_cap_mask_to_string(uint32_t mask, char *buf, size_t cap);
+
+/*
+ * ============================================================================
+ * STRING PARSING
+ * ============================================================================
+ */
+
+/*
+ * Parse a comma-separated list of capability names into a
+ * mask.
+ *
+ * The names are matched case-insensitively. The recognized
+ * names are "source", "client", "gateway". The name "none"
+ * matches a zero mask. Whitespace around a name is ignored.
+ *
+ * An empty string parses as BOWIE_CAP_NONE.
+ *
+ * An unknown name is counted but not rejected: the function
+ * continues parsing the rest of the list and reports the
+ * number of unknown names through out_unknown. A caller that
+ * wants strict behavior checks out_unknown after the call and
+ * rejects the mask if it is non-zero.
+ *
+ * Returns BOWIE_OK on success, with *out filled and
+ *   *out_unknown set to the number of unknown names.
+ * Returns BOWIE_ERR_NULL_ARG if str or out is NULL.
+ *
+ * A NULL out_unknown is allowed; the count is discarded.
+ */
+bowie_error_t bowie_cap_mask_from_string(const char *str,
+                                          uint32_t *out,
+                                          size_t *out_unknown);
+
+/*
+ * ============================================================================
+ * MASK OPERATIONS
+ * ============================================================================
+ */
+
+/*
+ * The mask of all known capabilities.
+ *
+ * A caller that needs to check whether a mask contains only
+ * known bits compares with this value.
+ */
+#define BOWIE_CAP_ALL \
+    ( (uint32_t)BOWIE_CAP_SOURCE  \
+    | (uint32_t)BOWIE_CAP_CLIENT  \
+    | (uint32_t)BOWIE_CAP_GATEWAY )
+
+/*
+ * True when every bit in the mask is a known capability.
+ *
+ * A mask of zero is valid. A mask with an unknown bit is not.
+ */
+int bowie_cap_mask_is_valid(uint32_t mask);
+
+/*
+ * ============================================================================
+ * END OF CAPABILITIES
  * ============================================================================
  */
 
