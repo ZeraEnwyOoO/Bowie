@@ -107,7 +107,7 @@
 
 #include "bowie/config.h"
 #include "bowie/err.h"
-#include "bowie/net/capabilities.h"
+#include "net/capabilities.h"
 
 /*
  * ============================================================================
