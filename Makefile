@@ -27,6 +27,7 @@
 #   LDFLAGS      linker flags
 #   LDLIBS       libraries to link
 #   NAT_BACKEND  NAT backend to build (placeholder / libjuice / xury)
+#   PLATFORM     platform backend (linux / android)
 #   V            verbose (V=1 to show full compile commands)
 #
 # ----------------------------------------------------------------------------
@@ -49,38 +50,44 @@ AR      ?= ar
 RANLIB  ?= ranlib
 
 # ----------------------------------------------------------------------------
-# Flags
+# Platform selection
 # ----------------------------------------------------------------------------
-
-# Strict, portable, C11. Werror is on for the prototype so that
-# a warning cannot be ignored by accident.
-CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -Werror
-CFLAGS  += -g -O0
-CFLAGS  += -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
-
-# Include paths. The order matters: public headers first, then
-# source tree so that internal headers can be included by their
-# path from the repository root (e.g. "core/internal/endian.h").
-CFLAGS  += -Iinclude
-CFLAGS  += -Isrc
-CFLAGS  += -Itests
-
-# Header dependency generation.
-CFLAGS  += -MMD -MP
-
-# OpenSSL. The project depends on libcrypto for all crypto
-# operations. libssl is not needed; it is only required for TLS,
-# which Bowie does not use.
-CFLAGS  += $(shell pkg-config --cflags libcrypto)
-LDLIBS  += $(shell pkg-config --libs libcrypto)
-
-# Check framework on Linux.
 #
-# -lsubunit is needed only when Check was built with the
-# subunit protocol. It is not present on every system, so it
-# is not included by default. If your system has it and the
-# link fails without it, add it back to LDLIBS.
-LDLIBS  += -lcheck -lm -lpthread -lrt
+# The platform backend is selected at build time.
+#
+#   linux     POSIX + Linux (default)
+#   android   POSIX + Linux + Android
+#
+# The Android build requires the Android NDK toolchain, which
+# the host Makefile does not set up. An Android build is done
+# by the NDK's own build system, not by this Makefile.
+
+PLATFORM ?= linux
+
+ifeq ($(PLATFORM),linux)
+PLATFORM_DEFS := -DBOWIE_PLATFORM_LINUX
+PLATFORM_SRCS := \
+    src/platform/posix/init.c \
+    src/platform/posix/time.c \
+    src/platform/posix/rand.c \
+    src/platform/posix/log.c \
+    src/platform/posix/sock.c \
+    src/platform/linux/netlink.c
+else ifeq ($(PLATFORM),android)
+PLATFORM_DEFS := -DBOWIE_PLATFORM_ANDROID
+PLATFORM_SRCS := \
+    src/platform/posix/init.c \
+    src/platform/posix/time.c \
+    src/platform/posix/rand.c \
+    src/platform/posix/log.c \
+    src/platform/posix/sock.c \
+    src/platform/linux/netlink.c \
+    src/platform/android/jni.c \
+    src/platform/android/log.c \
+    src/platform/android/permissions.c
+else
+$(error Unknown PLATFORM: $(PLATFORM). Use linux or android.)
+endif
 
 # ----------------------------------------------------------------------------
 # NAT backend selection
@@ -110,7 +117,43 @@ else
 $(error Unknown NAT_BACKEND: $(NAT_BACKEND). Use placeholder, libjuice, or xury.)
 endif
 
-LDLIBS += $(NAT_LIBS)
+# ----------------------------------------------------------------------------
+# Flags
+# ----------------------------------------------------------------------------
+
+# Strict, portable, C11. Werror is on for the prototype so that
+# a warning cannot be ignored by accident.
+CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -Werror
+CFLAGS  += -g -O0
+CFLAGS  += -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
+CFLAGS  += $(PLATFORM_DEFS)
+
+# Include paths. The order matters: public headers first, then
+# source tree so that internal headers can be included by their
+# path from the repository root (e.g. "core/internal/endian.h").
+CFLAGS  += -Iinclude
+CFLAGS  += -Isrc
+CFLAGS  += -Itests
+
+# Header dependency generation.
+CFLAGS  += -MMD -MP
+
+# OpenSSL. The project depends on libcrypto for all crypto
+# operations. libssl is not needed; it is only required for TLS,
+# which Bowie does not use.
+CFLAGS  += $(shell pkg-config --cflags libcrypto)
+LDLIBS  += $(shell pkg-config --libs libcrypto)
+
+# Check framework on Linux.
+#
+# -lsubunit is needed only when Check was built with the
+# subunit protocol. It is not present on every system, so it
+# is not included by default. If your system has it and the
+# link fails without it, add it back to LDLIBS.
+LDLIBS  += -lcheck -lm -lpthread -lrt
+
+# NAT backend libraries.
+LDLIBS  += $(NAT_LIBS)
 
 # ----------------------------------------------------------------------------
 # Directories
@@ -148,7 +191,9 @@ LIB_SRCS := \
     src/crypto/hash.c \
     src/crypto/cipher.c \
     src/crypto/sign.c \
-    src/crypto/keypair.c
+    src/crypto/keypair.c \
+    $(PLATFORM_SRCS) \
+    $(NAT_SRCS)
 
 # Library objects. The path is rewritten so that the object tree
 # mirrors the source tree under build/obj/.
@@ -276,6 +321,7 @@ help:
 	@echo "Variables:"
 	@echo
 	@echo "  CC           C compiler (default: cc)"
+	@echo "  PLATFORM     platform backend (linux / android)"
 	@echo "  NAT_BACKEND  NAT backend (placeholder / libjuice / xury)"
 	@echo "  V            set V=1 for verbose output"
 	@echo
@@ -283,6 +329,7 @@ help:
 	@echo
 	@echo "  make"
 	@echo "  make test"
+	@echo "  make PLATFORM=android"
 	@echo "  make NAT_BACKEND=libjuice"
 	@echo "  make clean && make test"
 	@echo "  make V=1 test"
