@@ -53,36 +53,22 @@
  *      by index, and the interface's name and flags are
  *      copied into the output entry.
  *
- * The two requests are separate because the kernel does not
- * combine them. A caller that needs only the addresses could
- * skip the first request, but the output entry would then
- * have an empty name and default flags. The two requests are
- * cheap; the implementation prefers a complete result.
- *
  * A dual-stack interface (one that has both an IPv4 and an
  * IPv6 address) produces two entries in the output list, one
  * per address. The name and index are the same for both; the
- * address differs. The caller that wants one entry per
- * interface must group by index.
+ * address differs.
  *
  * The output list is bounded by BOWIE_PLATFORM_IF_MAX. If the
  * kernel reports more addresses than the list can hold, the
  * list is filled to capacity and the "truncated" flag is set
- * to 1. A caller that ignores the flag may treat an
- * incomplete list as complete.
- *
- * The implementation reads the kernel's response in a single
- * buffer of 8 KiB. A kernel with a very large number of
- * interfaces may fill the buffer; the read loop continues
- * until NLMSG_DONE. A buffer that is too small to hold one
- * message is reported as a failure; in practice an 8 KiB
- * buffer holds many messages.
+ * to 1.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
  *   <sys/socket.h>                socket, send, recv, bind, close
+ *   <net/if.h>                    IFF_UP, IFF_LOOPBACK
  *   <linux/netlink.h>             struct nlmsghdr, struct
  *                                 sockaddr_nl, NETLINK_ROUTE
  *   <linux/rtnetlink.h>           struct ifinfomsg,
@@ -99,6 +85,7 @@
  */
 
 #include <sys/socket.h>
+#include <net/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/if_addr.h>
@@ -133,10 +120,6 @@ static bowie_error_t errno_to_bowie(int e)
  * ============================================================================
  * INTERNAL — LINK TABLE
  * ============================================================================
- *
- * A small intermediate table that holds the information from
- * the RTM_GETLINK response. The table is keyed by interface
- * index. A lookup is a linear scan; the table is small.
  */
 
 typedef struct link_entry {
@@ -178,11 +161,6 @@ static void link_table_add(link_table_t *t,
     memset(e, 0, sizeof(*e));
     e->index = index;
 
-    /*
-     * Copy the name. The kernel's name is NUL-terminated
-     * within IFNAMSIZ bytes; the destination is the same
-     * size, so a plain copy is safe.
-     */
     strncpy(e->name, name, BOWIE_PLATFORM_IF_NAME_MAX - 1u);
     e->name[BOWIE_PLATFORM_IF_NAME_MAX - 1u] = '\0';
 
@@ -194,37 +172,34 @@ static void link_table_add(link_table_t *t,
 
 /*
  * ============================================================================
- * INTERNAL — PARSE LINK MESSAGE
+ * INTERNAL — MESSAGE CALLBACK TYPE
  * ============================================================================
  *
- * Parse an RTM_NEWLINK message and add it to the link table.
- *
- * The message has a fixed header followed by a list of
- * attributes. The attribute of interest is IFLA_IFNAME, which
- * holds the interface name. The index and flags are in the
- * fixed header.
+ * The callback receives the message header and a void pointer
+ * to the caller's context. The context type is different for
+ * each request; the callback casts the void pointer to the
+ * type it expects.
  */
 
-static void parse_link_msg(struct nlmsghdr *nlh, link_table_t *t)
+typedef void (*nl_msg_cb_t)(struct nlmsghdr *nlh, void *ctx);
+
+/*
+ * ============================================================================
+ * INTERNAL — PARSE LINK MESSAGE
+ * ============================================================================
+ */
+
+static void parse_link_msg(struct nlmsghdr *nlh, void *ctx)
 {
+    link_table_t *t = (link_table_t *)ctx;
+
     struct ifinfomsg *ifi = (struct ifinfomsg *)NLMSG_DATA(nlh);
 
-    /*
-     * The interface index is in the header.
-     */
     uint32_t index = (uint32_t)ifi->ifi_index;
 
-    /*
-     * The flags are in the header. IFF_UP means the
-     * interface is up. IFF_LOOPBACK means it is a loopback
-     * interface.
-     */
     int is_up       = (ifi->ifi_flags & IFF_UP) ? 1 : 0;
     int is_loopback = (ifi->ifi_flags & IFF_LOOPBACK) ? 1 : 0;
 
-    /*
-     * Walk the attributes to find IFLA_IFNAME.
-     */
     int attr_len = (int)(nlh->nlmsg_len - NLMSG_LENGTH(sizeof(*ifi)));
     struct rtattr *rta = IFLA_RTA(ifi);
 
@@ -244,48 +219,36 @@ static void parse_link_msg(struct nlmsghdr *nlh, link_table_t *t)
  * ============================================================================
  * INTERNAL — PARSE ADDRESS MESSAGE
  * ============================================================================
- *
- * Parse an RTM_NEWADDR message and, if the address is usable,
- * append it to the output list.
- *
- * The address message has a fixed header followed by a list
- * of attributes. The attributes of interest are IFA_LOCAL
- * (the local address, which is what we want) and IFA_ADDRESS
- * (the peer address on a point-to-point link, which we do not
- * want).
- *
- * For a normal interface, IFA_LOCAL is the address we want.
- * For a point-to-point interface, IFA_LOCAL is the local end
- * and IFA_ADDRESS is the remote end. The function uses
- * IFA_LOCAL when it is present, and falls back to IFA_ADDRESS
- * when it is not.
  */
 
-static void parse_addr_msg(struct nlmsghdr *nlh,
-                            const link_table_t *links,
-                            bowie_platform_if_list_t *out)
+/*
+ * The context for the address request. It holds the link
+ * table and the output list. The callback casts the void
+ * pointer to this type.
+ */
+typedef struct addr_ctx {
+    const link_table_t       *links;
+    bowie_platform_if_list_t *out;
+} addr_ctx_t;
+
+static void parse_addr_msg(struct nlmsghdr *nlh, void *ctx)
 {
+    addr_ctx_t *actx = (addr_ctx_t *)ctx;
+
+    const link_table_t       *links = actx->links;
+    bowie_platform_if_list_t *out   = actx->out;
+
     struct ifaddrmsg *ifa = (struct ifaddrmsg *)NLMSG_DATA(nlh);
 
-    /*
-     * Only IPv4 and IPv6 addresses are interesting.
-     */
     if (ifa->ifa_family != AF_INET && ifa->ifa_family != AF_INET6) {
         return;
     }
 
-    /*
-     * The list is bounded. A list that is already full sets
-     * the truncated flag and is not extended.
-     */
     if (out->count >= BOWIE_PLATFORM_IF_MAX) {
         out->truncated = 1;
         return;
     }
 
-    /*
-     * Walk the attributes to find IFA_LOCAL or IFA_ADDRESS.
-     */
     int attr_len = (int)(nlh->nlmsg_len - NLMSG_LENGTH(sizeof(*ifa)));
     struct rtattr *rta = IFA_RTA(ifa);
     const void *addr_data = NULL;
@@ -298,10 +261,6 @@ static void parse_addr_msg(struct nlmsghdr *nlh,
             break;
         }
         if (rta->rta_type == IFA_ADDRESS) {
-            /*
-             * Remember the address, but keep looking for
-             * IFA_LOCAL.
-             */
             addr_data = RTA_DATA(rta);
             addr_len  = RTA_PAYLOAD(rta);
         }
@@ -327,11 +286,6 @@ static void parse_addr_msg(struct nlmsghdr *nlh,
     entry->addr.port = 0u;
     entry->index     = ifa->ifa_index;
 
-    /*
-     * Look up the interface in the link table. If found, copy
-     * the name and flags. If not found, leave the name empty
-     * and the flags at their default values.
-     */
     const link_entry_t *le = link_table_find(links, ifa->ifa_index);
     if (le != NULL) {
         memcpy(entry->name, le->name, BOWIE_PLATFORM_IF_NAME_MAX);
@@ -351,36 +305,16 @@ static void parse_addr_msg(struct nlmsghdr *nlh,
  * ============================================================================
  * INTERNAL — NETLINK REQUEST
  * ============================================================================
- *
- * Send one rtnetlink request and read the response.
- *
- * The caller supplies the request type and a callback that
- * parses each message. The callback receives the message
- * header and the caller's context.
- *
- * The function returns BOWIE_OK on success and an error code
- * on failure. The error is reported through the return value.
  */
-
-typedef void (*nl_msg_cb_t)(struct nlmsghdr *nlh, void *ctx);
 
 static bowie_error_t nl_request(int fd, uint16_t type,
                                  struct nlmsghdr *req,
                                  nl_msg_cb_t cb, void *ctx)
 {
-    (void)req; /* the request is already prepared by the caller */
-
-    /*
-     * Send the request.
-     */
     if (send(fd, req, req->nlmsg_len, 0) < 0) {
         return errno_to_bowie(errno);
     }
 
-    /*
-     * Read the response. The response may span multiple
-     * messages; the loop reads until NLMSG_DONE or an error.
-     */
     char buf[8192];
     int  done = 0;
 
@@ -433,17 +367,11 @@ bowie_error_t bowie_platform_if_list(bowie_platform_if_list_t *out)
 
     memset(out, 0, sizeof(*out));
 
-    /*
-     * Open a netlink socket.
-     */
     int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (fd < 0) {
         return errno_to_bowie(errno);
     }
 
-    /*
-     * Bind the socket to the current process.
-     */
     struct sockaddr_nl local;
     memset(&local, 0, sizeof(local));
     local.nl_family = AF_NETLINK;
@@ -455,8 +383,7 @@ bowie_error_t bowie_platform_if_list(bowie_platform_if_list_t *out)
     }
 
     /*
-     * First request: RTM_GETLINK with NLM_F_DUMP. This fills
-     * the link table with interface names and flags.
+     * First request: RTM_GETLINK with NLM_F_DUMP.
      */
     struct {
         struct nlmsghdr  nlh;
@@ -477,7 +404,7 @@ bowie_error_t bowie_platform_if_list(bowie_platform_if_list_t *out)
 
     bowie_error_t rc = nl_request(fd, RTM_NEWLINK,
                                    &link_req.nlh,
-                                   (nl_msg_cb_t)parse_link_msg,
+                                   parse_link_msg,
                                    &links);
     if (rc != BOWIE_OK) {
         close(fd);
@@ -485,8 +412,7 @@ bowie_error_t bowie_platform_if_list(bowie_platform_if_list_t *out)
     }
 
     /*
-     * Second request: RTM_GETADDR with NLM_F_DUMP. This
-     * fills the output list with addresses.
+     * Second request: RTM_GETADDR with NLM_F_DUMP.
      */
     struct {
         struct nlmsghdr  nlh;
@@ -502,24 +428,11 @@ bowie_error_t bowie_platform_if_list(bowie_platform_if_list_t *out)
 
     addr_req.ifa.ifa_family = AF_UNSPEC;
 
-    /*
-     * The callback for the address request needs both the
-     * link table and the output list. A small context struct
-     * holds both.
-     */
-    struct addr_ctx {
-        const link_table_t        *links;
-        bowie_platform_if_list_t  *out;
-    } actx = { &links, out };
+    addr_ctx_t actx = { &links, out };
 
-    /*
-     * The callback signature is (struct nlmsghdr *, void *).
-     * The cast is the standard idiom for a callback that
-     * needs a different context type.
-     */
     rc = nl_request(fd, RTM_NEWADDR,
                     &addr_req.nlh,
-                    (nl_msg_cb_t)parse_addr_msg,
+                    parse_addr_msg,
                     &actx);
 
     close(fd);
