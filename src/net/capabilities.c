@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -97,7 +97,7 @@
  *   <string.h>                    strlen, memcpy
  *   "bowie/config.h"              bowie_cap_t, BOWIE_CAP_*
  *   "bowie/err.h"                 error codes
- *   "bowie/net/capabilities.h"    the declarations
+ *   "net/capabilities.h"          the declarations
  * ============================================================================
  */
 
@@ -172,25 +172,6 @@ static int str_case_equal(const char *a, const char *b)
         b++;
     }
     return (*a == '\0' && *b == '\0') ? 1 : 0;
-}
-
-/*
- * ============================================================================
- * INTERNAL — COUNT SET BITS
- * ============================================================================
- *
- * Return the number of set bits in a mask. The implementation
- * is the standard bit-twiddling loop.
- */
-
-static unsigned int count_bits(uint32_t mask)
-{
-    unsigned int n = 0u;
-    while (mask != 0u) {
-        n++;
-        mask &= mask - 1u;
-    }
-    return n;
 }
 
 /*
