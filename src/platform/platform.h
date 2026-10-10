@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -55,7 +55,8 @@
  *
  *   - Time. Monotonic and wall-clock time in milliseconds.
  *
- *   - Random. Fast and secure random bytes.
+ *   - Random. Secure random bytes from the platform entropy
+ *     source.
  *
  *   - Log. Writing a line to the platform's log facility.
  *
@@ -64,6 +65,9 @@
  *
  *   - Socket options. A small set of socket options that the
  *     platform API exposes differently.
+ *
+ *   - Permissions. A check for the permissions a network
+ *     operation needs.
  *
  * Everything else (allocation, string handling, byte order) is
  * already portable and does not need a platform backend.
@@ -213,6 +217,9 @@ bowie_wtime_t bowie_platform_walltime_ms(void);
  *
  * A return of 0 is not produced for a non-zero request. The
  * function either fills the buffer or reports a failure.
+ *
+ * A NULL buffer with n > 0 returns -1. A request with n == 0
+ * returns 0 without touching the buffer.
  */
 long bowie_platform_entropy(void *buf, size_t n);
 
@@ -260,33 +267,54 @@ void bowie_platform_log_write(int level, const char *line);
 
 /*
  * The maximum length of an interface name, including the NUL
- * terminator.
+ * terminator. Linux's IFNAMSIZ is 16, so the buffer matches.
  */
 #define BOWIE_PLATFORM_IF_NAME_MAX 16
 
 /*
  * A single interface entry.
+ *
+ * The entry describes one interface. A dual-stack interface
+ * (one that has both an IPv4 and an IPv6 address) produces two
+ * entries, one per address. The name and index fields are the
+ * same for both entries; the addr field differs.
+ *
+ * The name is empty if the platform could not resolve it. A
+ * caller that needs the name must check that it is not empty
+ * before using it.
  */
 typedef struct bowie_platform_if {
-    char        name[BOWIE_PLATFORM_IF_NAME_MAX];
+    char         name[BOWIE_PLATFORM_IF_NAME_MAX];
     bowie_addr_t addr;          /* IPv4 or IPv6 */
-    int         is_up;          /* 1 if up, 0 if down */
-    int         is_loopback;    /* 1 if loopback */
-    uint32_t    index;          /* interface index, if known */
+    int          is_up;         /* 1 if up, 0 if down */
+    int          is_loopback;   /* 1 if loopback */
+    uint32_t     index;         /* interface index, if known */
 } bowie_platform_if_t;
 
 /*
  * The result of an enumeration.
+ *
+ * The list holds up to BOWIE_PLATFORM_IF_MAX entries. If the
+ * platform had more entries than the list can hold, the
+ * "truncated" flag is set to 1. A caller that needs the full
+ * list must use a larger buffer or enumerate in batches.
+ *
+ * The "truncated" flag is the only way a caller can tell that
+ * the list is incomplete. A caller that ignores it may treat
+ * an incomplete list as complete.
  */
 typedef struct bowie_platform_if_list {
     bowie_platform_if_t ifs[BOWIE_PLATFORM_IF_MAX];
     size_t              count;
+    int                 truncated;  /* 1 if the list was truncated */
 } bowie_platform_if_list_t;
 
 /*
  * Enumerate the local network interfaces.
  *
- * On success, the list is filled and the count is set.
+ * On success, the list is filled, the count is set, and the
+ * truncated flag is set if the platform had more entries than
+ * the list can hold.
  *
  * Returns BOWIE_OK on success.
  * Returns BOWIE_ERR_NULL_ARG if out is NULL.
@@ -329,10 +357,9 @@ bowie_error_t bowie_platform_sock_set_dontfrag(
 /*
  * Bind a socket to a specific network interface.
  *
- * The name is the interface name (e.g. "eth0"). The name is
- * not NUL-terminated in the buffer if the interface name is
- * exactly the buffer size; the caller must ensure the name
- * fits.
+ * The name is the interface name (e.g. "eth0"). The name must
+ * fit in the platform's interface name buffer; a name that is
+ * too long is rejected by the platform.
  *
  * Returns BOWIE_OK on success.
  * Returns BOWIE_ERR_NULL_ARG if name is NULL.
