@@ -192,6 +192,8 @@ LIB_SRCS := \
     src/crypto/cipher.c \
     src/crypto/sign.c \
     src/crypto/keypair.c \
+    src/net/capabilities.c \
+    src/net/peer.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS)
 
@@ -225,7 +227,9 @@ UNIT_TEST_SRCS := \
     tests/unit/crypto/test_hash.c \
     tests/unit/crypto/test_cipher.c \
     tests/unit/crypto/test_sign.c \
-    tests/unit/crypto/test_keypair.c
+    tests/unit/crypto/test_keypair.c \
+    tests/unit/net/test_capabilities.c \
+    tests/unit/net/test_peer.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
