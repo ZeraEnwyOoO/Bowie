@@ -1,4 +1,4 @@
-# Bowie — Complete Documentation
+# Bowie —  
 
 Version: 2.2.0 (draft, reconciled with SITUATION_REPORT 2026-10-09)
 License: GPL-3
