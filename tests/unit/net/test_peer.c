@@ -46,6 +46,7 @@
 #include <check.h>
 #include <string.h>
 
+#include "net/capabilities.h"
 #include "net/peer.h"
 
 /*
