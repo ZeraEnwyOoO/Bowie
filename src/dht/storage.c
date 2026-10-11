@@ -648,3 +648,293 @@ bowie_error_t bowie_dht_storage_find_peers_with_cap(
  * END OF PART 1
  * ============================================================================
  */
+/*
+ * ============================================================================
+ * PART 2 — REMOVE AND COMPACTION
+ * ============================================================================
+ *
+ * Removing a peer or a hash leaves a hole. The storage
+ * compacts the arrays so that the peers of each hash stay
+ * contiguous.
+ *
+ * The compaction is done in three steps:
+ *
+ *   1. Shift the following peers down by the number of
+ *      removed entries.
+ *   2. Shift the following metadata down by the same number.
+ *   3. Update the "first" index of every hash entry that
+ *      follows the removed range.
+ *
+ * The peers array is dense after every removal. The hashes
+ * array is dense after every hash removal.
+ *
+ * ----------------------------------------------------------------------------
+ * Design notes
+ * ----------------------------------------------------------------------------
+ *
+ * A peer removal compacts the peers array only. The hashes
+ * array is unchanged unless the removal empties the hash.
+ *
+ * A hash removal compacts both arrays. The hash's peer range
+ * is removed from the peers array, and the hash entry is
+ * removed from the hashes array. Every hash entry that
+ * follows has its "first" index reduced by the number of
+ * removed peers.
+ *
+ * The expire function calls the removal function once per
+ * expired peer. The removal function handles the compaction
+ * for that peer. A hash that becomes empty is removed on the
+ * same call.
+ *
+ * The metadata array, when present, is compacted alongside
+ * the peers array. The two arrays stay in lockstep.
+ */
+
+/*
+ * ============================================================================
+ * INTERNAL — COMPACT PEERS
+ * ============================================================================
+ *
+ * Remove a range of peers from the peers array. The peers of
+ * a hash are a contiguous range [first, first + count). The
+ * function shifts the peers that follow the range down by
+ * "count" and updates the "first" index of every hash entry
+ * that starts after the removed range.
+ *
+ * The metadata array, when present, is shifted by the same
+ * amount.
+ *
+ * The caller has already updated the removed hash's "count".
+ * The function does not touch the removed hash's entry.
+ */
+
+static void compact_peers(bowie_dht_storage_t *storage,
+                          size_t               first,
+                          size_t               count)
+{
+    if (count == 0u) {
+        return;
+    }
+
+    size_t end = first + count;
+    if (end > storage->peers_used) {
+        end = storage->peers_used;
+        count = end - first;
+        if (count == 0u) {
+            return;
+        }
+    }
+
+    size_t move_count = storage->peers_used - end;
+
+    if (move_count > 0u) {
+        memmove(&storage->peers[first],
+                &storage->peers[end],
+                move_count * sizeof(bowie_dht_peer_entry_t));
+
+        if (storage->config.store_metadata &&
+            storage->metadata != NULL) {
+            memmove(&storage->metadata[first],
+                    &storage->metadata[end],
+                    move_count * sizeof(bowie_dht_peer_metadata_t));
+        }
+    }
+
+    /*
+     * Clear the tail. The bytes beyond the new end are not
+     * part of the array. Clearing them is not required for
+     * correctness, but it makes a debugger view cleaner.
+     */
+    size_t new_used = storage->peers_used - count;
+    for (size_t i = new_used; i < storage->peers_used; i++) {
+        memset(&storage->peers[i], 0,
+               sizeof(storage->peers[i]));
+        if (storage->config.store_metadata &&
+            storage->metadata != NULL) {
+            memset(&storage->metadata[i], 0,
+                   sizeof(storage->metadata[i]));
+        }
+    }
+    storage->peers_used = new_used;
+
+    /*
+     * Update the "first" index of every hash entry that
+     * starts at or after the removed range.
+     */
+    for (size_t i = 0u; i < storage->hashes_used; i++) {
+        bowie_dht_hash_entry_t *h = &storage->hashes[i];
+        if (h->first >= end) {
+            h->first -= count;
+        }
+    }
+}
+
+/*
+ * ============================================================================
+ * INTERNAL — REMOVE A HASH ENTRY
+ * ============================================================================
+ *
+ * Remove a hash entry from the hashes array. The function
+ * shifts the following hash entries down by one. The
+ * removed hash's peers must have been removed from the peers
+ * array before this call.
+ */
+
+static void remove_hash_at(bowie_dht_storage_t *storage, size_t idx)
+{
+    size_t move_count = storage->hashes_used - idx - 1u;
+    if (move_count > 0u) {
+        memmove(&storage->hashes[idx],
+                &storage->hashes[idx + 1u],
+                move_count * sizeof(bowie_dht_hash_entry_t));
+    }
+    storage->hashes_used--;
+    memset(&storage->hashes[storage->hashes_used], 0,
+           sizeof(storage->hashes[storage->hashes_used]));
+}
+
+/*
+ * ============================================================================
+ * PART 2 — REMOVE PEER
+ * ============================================================================
+ */
+
+bowie_error_t bowie_dht_storage_remove_peer(
+    bowie_dht_storage_t         *storage,
+    const bowie_dht_info_hash_t *hash,
+    const bowie_addr_t          *addr)
+{
+    if (storage == NULL || hash == NULL || addr == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    int hidx = find_hash_index(storage, hash);
+    if (hidx < 0) {
+        return BOWIE_ERR_NOT_FOUND;
+    }
+
+    bowie_dht_hash_entry_t *h = &storage->hashes[hidx];
+
+    int pidx = find_peer_index(storage, h, addr);
+    if (pidx < 0) {
+        return BOWIE_ERR_NOT_FOUND;
+    }
+
+    /*
+     * The peer is at index pidx. The peers of this hash are
+     * [h->first, h->first + h->count). The removal is a
+     * single-entry range: [pidx, pidx + 1).
+     */
+    compact_peers(storage, (size_t)pidx, 1u);
+    h->count--;
+
+    /*
+     * When the hash has no peers, remove the hash entry.
+     */
+    if (h->count == 0u) {
+        remove_hash_at(storage, (size_t)hidx);
+    }
+
+    return BOWIE_OK;
+}
+
+/*
+ * ============================================================================
+ * PART 2 — REMOVE HASH
+ * ============================================================================
+ */
+
+bowie_error_t bowie_dht_storage_remove_hash(
+    bowie_dht_storage_t         *storage,
+    const bowie_dht_info_hash_t *hash)
+{
+    if (storage == NULL || hash == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    int hidx = find_hash_index(storage, hash);
+    if (hidx < 0) {
+        return BOWIE_ERR_NOT_FOUND;
+    }
+
+    bowie_dht_hash_entry_t *h = &storage->hashes[hidx];
+
+    /*
+     * Remove the peers first, then the hash entry.
+     */
+    compact_peers(storage, h->first, h->count);
+    remove_hash_at(storage, (size_t)hidx);
+
+    return BOWIE_OK;
+}
+
+/*
+ * ============================================================================
+ * PART 2 — EXPIRE
+ * ============================================================================
+ *
+ * Walk every hash and every peer. Remove the peers that have
+ * expired. A hash that becomes empty is removed.
+ *
+ * The function walks the arrays from the end so that a removal
+ * does not disturb the index of the entries that have not
+ * been visited yet. The compaction is O(n) per removal; with
+ * the bounded capacities the total cost is acceptable.
+ *
+ * An alternative is a single pass that builds a new array in
+ * place. The single pass is more efficient but harder to
+ * read. The current implementation is the readable one.
+ */
+
+size_t bowie_dht_storage_expire(bowie_dht_storage_t *storage,
+                                bowie_mtime_t now_ms)
+{
+    if (storage == NULL) {
+        return 0u;
+    }
+
+    size_t removed = 0u;
+
+    /*
+     * Walk hashes from the end. The removal of a hash
+     * shifts the later entries down; a backward walk visits
+     * each hash exactly once.
+     */
+    for (size_t hi = storage->hashes_used; hi > 0u; hi--) {
+        size_t h_idx = hi - 1u;
+        bowie_dht_hash_entry_t *h = &storage->hashes[h_idx];
+
+        /*
+         * Walk the peers of this hash from the end. The
+         * removal of a peer shifts the following peers
+         * down; a backward walk visits each peer exactly
+         * once and keeps the index stable.
+         */
+        size_t peer_idx = h->count;
+        while (peer_idx > 0u) {
+            peer_idx--;
+            size_t p = h->first + peer_idx;
+
+            if (!bowie_dht_peer_entry_is_expired(
+                    &storage->peers[p], now_ms)) {
+                continue;
+            }
+
+            compact_peers(storage, p, 1u);
+            h->count--;
+            removed++;
+        }
+
+        if (h->count == 0u) {
+            remove_hash_at(storage, h_idx);
+        }
+    }
+
+    return removed;
+}
+
+/*
+ * ============================================================================
+ * END OF PART 2
+ * ============================================================================
+ */
