@@ -856,3 +856,270 @@ const bowie_bencode_value_t *bowie_bencode_dict_get(
  * END OF PART 2 — VALUE ACCESS
  * ============================================================================
  */
+/*
+ * ============================================================================
+ * PART 3 — ENCODE
+ * ============================================================================
+ *
+ * The encoder writes a value tree into a caller-supplied
+ * buffer. The caller builds the tree by calling the writer
+ * functions in order. The writer does not allocate.
+ *
+ * A list is written as:
+ *
+ *   bowie_bencode_begin_list(w);
+ *   bowie_bencode_write_int(w, 1);
+ *   bowie_bencode_write_str(w, span);
+ *   bowie_bencode_end_list(w);
+ *
+ * A dictionary is written as:
+ *
+ *   bowie_bencode_begin_dict(w);
+ *   bowie_bencode_write_dict_key(w, key1);
+ *   bowie_bencode_write_int(w, value1);
+ *   bowie_bencode_write_dict_key(w, key2);
+ *   bowie_bencode_write_str(w, value2);
+ *   bowie_bencode_end_dict(w);
+ *
+ * The caller is responsible for writing the dictionary keys
+ * in sorted order. The writer does not sort them. A caller
+ * that does not know the order can use a temporary array and
+ * a sort routine from the standard library.
+ *
+ * ----------------------------------------------------------------------------
+ * Design notes
+ * ----------------------------------------------------------------------------
+ *
+ * The writer is a small struct: a buffer, a capacity, and a
+ * position. Every write checks that the value fits before
+ * writing. A write that does not fit is reported as
+ * BOWIE_ERR_TOO_SMALL, and the position is not advanced.
+ *
+ * Integer encoding writes the decimal form of the value
+ * followed by 'e'. The decimal form is produced by snprintf
+ * into a small stack buffer. The buffer is large enough for
+ * the longest possible int64_t value: 20 digits plus a sign
+ * plus a NUL terminator.
+ *
+ * String encoding writes the length in decimal, then ':', then
+ * the bytes. The length is produced by snprintf into a small
+ * stack buffer.
+ *
+ * The begin/end functions write a single byte. They are
+ * separate from the write functions so that a caller can
+ * structure the code by nesting.
+ *
+ * The writer does not track nesting. A caller that calls
+ * end_list without a matching begin_list produces a malformed
+ * output. The writer does not detect this, because detecting
+ * it would require a nesting stack and a policy for what to
+ * do when the stack overflows. The DHT layer that builds the
+ * messages knows the structure it is building and does not
+ * need the check.
+ *
+ * ----------------------------------------------------------------------------
+ * Dependencies
+ * ----------------------------------------------------------------------------
+ *
+ *   <stdio.h>                    snprintf
+ *   <string.h>                   memcpy
+ *   "dht/bencode.h"              the declarations
+ * ============================================================================
+ */
+
+/*
+ * ============================================================================
+ * INTERNAL — WRITE RAW BYTES
+ * ============================================================================
+ *
+ * Write n bytes into the writer. If the buffer does not have
+ * room, the write is rejected and the position is not
+ * advanced.
+ */
+
+static bowie_error_t writer_write(bowie_bencode_writer_t *w,
+                                  const void *src, size_t n)
+{
+    if (w == NULL || src == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (n > w->cap - w->pos) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
+    memcpy(w->buf + w->pos, src, n);
+    w->pos += n;
+    return BOWIE_OK;
+}
+
+static bowie_error_t writer_write_byte(bowie_bencode_writer_t *w,
+                                       uint8_t b)
+{
+    if (w == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (w->pos >= w->cap) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
+    w->buf[w->pos++] = b;
+    return BOWIE_OK;
+}
+
+/*
+ * ============================================================================
+ * WRITER INIT
+ * ============================================================================
+ */
+
+void bowie_bencode_writer_init(bowie_bencode_writer_t *w,
+                               uint8_t *buf, size_t cap)
+{
+    if (w == NULL) {
+        return;
+    }
+    w->buf = buf;
+    w->cap = cap;
+    w->pos = 0u;
+}
+
+size_t bowie_bencode_writer_pos(const bowie_bencode_writer_t *w)
+{
+    if (w == NULL) {
+        return 0u;
+    }
+    return w->pos;
+}
+
+/*
+ * ============================================================================
+ * WRITE INTEGER
+ * ============================================================================
+ *
+ * Format: i<decimal>e
+ *
+ * The decimal form is produced by snprintf into a 24-byte
+ * stack buffer. The buffer is large enough for the longest
+ * int64_t value: a sign, 19 digits, and a NUL terminator.
+ */
+
+bowie_error_t bowie_bencode_write_int(bowie_bencode_writer_t *w,
+                                      int64_t value)
+{
+    if (w == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    char tmp[24];
+    int  n = snprintf(tmp, sizeof(tmp), "%lld",
+                      (long long)value);
+    if (n < 0 || (size_t)n >= sizeof(tmp)) {
+        return BOWIE_ERR_INTERNAL;
+    }
+
+    bowie_error_t rc = writer_write_byte(w, (uint8_t)'i');
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    rc = writer_write(w, tmp, (size_t)n);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    return writer_write_byte(w, (uint8_t)'e');
+}
+
+/*
+ * ============================================================================
+ * WRITE STRING
+ * ============================================================================
+ *
+ * Format: <decimal length>:<bytes>
+ *
+ * The length is produced by snprintf into a 24-byte stack
+ * buffer. The buffer is large enough for the longest size_t
+ * value: 20 digits and a NUL terminator.
+ */
+
+bowie_error_t bowie_bencode_write_str(bowie_bencode_writer_t *w,
+                                      bowie_span_t value)
+{
+    if (w == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (value.len > 0u && value.data == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    char tmp[24];
+    int  n = snprintf(tmp, sizeof(tmp), "%zu", value.len);
+    if (n < 0 || (size_t)n >= sizeof(tmp)) {
+        return BOWIE_ERR_INTERNAL;
+    }
+
+    bowie_error_t rc = writer_write(w, tmp, (size_t)n);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    rc = writer_write_byte(w, (uint8_t)':');
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    if (value.len > 0u) {
+        rc = writer_write(w, value.data, value.len);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
+    }
+
+    return BOWIE_OK;
+}
+
+/*
+ * ============================================================================
+ * LISTS
+ * ============================================================================
+ */
+
+bowie_error_t bowie_bencode_begin_list(bowie_bencode_writer_t *w)
+{
+    return writer_write_byte(w, (uint8_t)'l');
+}
+
+bowie_error_t bowie_bencode_end_list(bowie_bencode_writer_t *w)
+{
+    return writer_write_byte(w, (uint8_t)'e');
+}
+
+/*
+ * ============================================================================
+ * DICTIONARIES
+ * ============================================================================
+ */
+
+bowie_error_t bowie_bencode_begin_dict(bowie_bencode_writer_t *w)
+{
+    return writer_write_byte(w, (uint8_t)'d');
+}
+
+bowie_error_t bowie_bencode_end_dict(bowie_bencode_writer_t *w)
+{
+    return writer_write_byte(w, (uint8_t)'e');
+}
+
+bowie_error_t bowie_bencode_write_dict_key(
+    bowie_bencode_writer_t *w, bowie_span_t key)
+{
+    /*
+     * A dictionary key is a byte string. The encoding is the
+     * same as for a string value: <length>:<bytes>.
+     */
+    return bowie_bencode_write_str(w, key);
+}
+
+/*
+ * ============================================================================
+ * END OF FILE
+ * ============================================================================
+ */
