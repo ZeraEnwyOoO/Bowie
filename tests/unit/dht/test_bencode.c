@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -997,4 +997,108 @@ static Suite *bencode_suite(void)
     tcase_add_test(tc_int, test_decode_int_positive);
     tcase_add_test(tc_int, test_decode_int_negative);
     tcase_add_test(tc_int, test_decode_int_leading_zero_strict);
-    tcase_add_test(tc_int, test
+    tcase_add_test(tc_int, test_decode_int_leading_zero_lenient);
+    tcase_add_test(tc_int, test_decode_int_negative_zero_strict);
+    tcase_add_test(tc_int, test_decode_int_negative_zero_lenient);
+    tcase_add_test(tc_int, test_decode_int_no_terminator);
+    tcase_add_test(tc_int, test_decode_int_empty);
+    suite_add_tcase(s, tc_int);
+
+    TCase *tc_str = tcase_create("DecodeStr");
+    tcase_add_test(tc_str, test_decode_str_empty);
+    tcase_add_test(tc_str, test_decode_str_spam);
+    tcase_add_test(tc_str, test_decode_str_too_short);
+    tcase_add_test(tc_str, test_decode_str_no_colon);
+    suite_add_tcase(s, tc_str);
+
+    TCase *tc_list = tcase_create("DecodeList");
+    tcase_add_test(tc_list, test_decode_list_empty);
+    tcase_add_test(tc_list, test_decode_list_ints);
+    tcase_add_test(tc_list, test_decode_list_mixed);
+    tcase_add_test(tc_list, test_decode_list_missing_terminator);
+    suite_add_tcase(s, tc_list);
+
+    TCase *tc_dict = tcase_create("DecodeDict");
+    tcase_add_test(tc_dict, test_decode_dict_empty);
+    tcase_add_test(tc_dict, test_decode_dict_single);
+    tcase_add_test(tc_dict, test_decode_dict_sorted);
+    tcase_add_test(tc_dict, test_decode_dict_unsorted_strict);
+    tcase_add_test(tc_dict, test_decode_dict_unsorted_lenient);
+    tcase_add_test(tc_dict, test_decode_dict_missing_value);
+    suite_add_tcase(s, tc_dict);
+
+    TCase *tc_nest = tcase_create("DecodeNesting");
+    tcase_add_test(tc_nest, test_decode_nested_list_in_dict);
+    tcase_add_test(tc_nest, test_decode_nested_dict_in_list);
+    suite_add_tcase(s, tc_nest);
+
+    TCase *tc_err = tcase_create("DecodeErrors");
+    tcase_add_test(tc_err, test_decode_null_arena);
+    tcase_add_test(tc_err, test_decode_null_out);
+    tcase_add_test(tc_err, test_decode_empty_input);
+    tcase_add_test(tc_err, test_decode_trailing_bytes);
+    tcase_add_test(tc_err, test_decode_garbage);
+    tcase_add_test(tc_err, test_decode_arena_too_small);
+    suite_add_tcase(s, tc_err);
+
+    TCase *tc_acc = tcase_create("AccessWrongKind");
+    tcase_add_test(tc_acc, test_get_int_wrong_kind);
+    tcase_add_test(tc_acc, test_get_str_wrong_kind);
+    tcase_add_test(tc_acc, test_get_list_wrong_kind);
+    tcase_add_test(tc_acc, test_get_dict_wrong_kind);
+    tcase_add_test(tc_acc, test_get_int_null);
+    tcase_add_test(tc_acc, test_get_int_null_out);
+    suite_add_tcase(s, tc_acc);
+
+    TCase *tc_at = tcase_create("AccessAtIndex");
+    tcase_add_test(tc_at, test_list_at_out_of_range);
+    tcase_add_test(tc_at, test_list_at_wrong_kind);
+    tcase_add_test(tc_at, test_list_at_null);
+    tcase_add_test(tc_at, test_dict_at_out_of_range);
+    tcase_add_test(tc_at, test_dict_at_wrong_kind);
+    tcase_add_test(tc_at, test_dict_get_missing);
+    tcase_add_test(tc_at, test_dict_get_null);
+    suite_add_tcase(s, tc_at);
+
+    TCase *tc_eint = tcase_create("EncodeInt");
+    tcase_add_test(tc_eint, test_encode_int_zero);
+    tcase_add_test(tc_eint, test_encode_int_positive);
+    tcase_add_test(tc_eint, test_encode_int_negative);
+    tcase_add_test(tc_eint, test_encode_int_too_small);
+    suite_add_tcase(s, tc_eint);
+
+    TCase *tc_estr = tcase_create("EncodeStr");
+    tcase_add_test(tc_estr, test_encode_str_empty);
+    tcase_add_test(tc_estr, test_encode_str_spam);
+    tcase_add_test(tc_estr, test_encode_str_too_small);
+    suite_add_tcase(s, tc_estr);
+
+    TCase *tc_elist = tcase_create("EncodeList");
+    tcase_add_test(tc_elist, test_encode_list_empty);
+    tcase_add_test(tc_elist, test_encode_list_ints);
+    suite_add_tcase(s, tc_elist);
+
+    TCase *tc_edict = tcase_create("EncodeDict");
+    tcase_add_test(tc_edict, test_encode_dict_empty);
+    tcase_add_test(tc_edict, test_encode_dict_single);
+    suite_add_tcase(s, tc_edict);
+
+    TCase *tc_rt = tcase_create("RoundTrip");
+    tcase_add_test(tc_rt, test_round_trip_dict);
+    suite_add_tcase(s, tc_rt);
+
+    return s;
+}
+
+int main(void)
+{
+    Suite *s = bencode_suite();
+    SRunner *sr = srunner_create(s);
+
+    srunner_run_all(sr, CK_NORMAL);
+
+    int failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+
+    return (failed == 0) ? 0 : 1;
+}
