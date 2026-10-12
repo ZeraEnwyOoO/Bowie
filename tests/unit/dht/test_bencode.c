@@ -55,11 +55,6 @@
  * ============================================================================
  * HELPERS
  * ============================================================================
- *
- * A decode test needs an arena. The arrays are file-scope so
- * that they are not on the stack; a large decode test can use
- * many values and entries. The arrays are reset by the decode
- * function, so a single set can be reused across tests.
  */
 
 #define TEST_VALUE_CAP  64
@@ -574,8 +569,13 @@ START_TEST(test_decode_arena_too_small)
     /*
      * A tiny arena. The decoder needs a value for the root.
      * The arena can hold zero values, so the decode fails.
+     *
+     * The arrays are declared with size 1, not 0, because
+     * ISO C forbids a zero-size array. The capacities are
+     * set to 0 and 1 respectively, so the decoder sees an
+     * arena with no value slots.
      */
-    bowie_bencode_value_t small_values[0];
+    bowie_bencode_value_t small_values[1];
     bowie_bencode_dict_entry_t small_entries[1];
 
     bowie_bencode_arena_t a;
@@ -938,10 +938,6 @@ END_TEST
 
 START_TEST(test_round_trip_dict)
 {
-    /*
-     * Encode a dictionary, then decode the result and check
-     * that the value is the same.
-     */
     uint8_t buf[64];
     bowie_bencode_writer_t w;
     bowie_bencode_writer_init(&w, buf, sizeof(buf));
