@@ -56,6 +56,9 @@
  * writer functions from the bencode module. It does not build
  * the tree in memory first.
  *
+ * The serializer writes dictionary keys in byte order. The
+ * decoder is strict, so an unsorted key is a format error.
+ *
  * A missing required field is reported as BOWIE_ERR_FORMAT. A
  * field with the wrong type is reported as BOWIE_ERR_TYPE. A
  * field that exceeds a limit is reported as BOWIE_ERR_TOO_LARGE.
@@ -808,7 +811,6 @@ bowie_error_t bowie_dht_message_parse(
  */
 
 #define COMPACT_CHUNK_NODES  16
-#define COMPACT_CHUNK_PEERS  32
 
 static bowie_error_t write_span(bowie_bencode_writer_t *w,
                                 const uint8_t *data, size_t len)
@@ -896,6 +898,11 @@ static bowie_error_t write_query_name(bowie_bencode_writer_t *w,
     return bowie_bencode_write_str(w, s);
 }
 
+/*
+ * Serialize a query. The keys are written in byte order:
+ * "a", "q", "t", "y".
+ */
+
 static bowie_error_t serialize_query(
     const bowie_dht_message_t *msg,
     bowie_bencode_writer_t    *w)
@@ -905,24 +912,7 @@ static bowie_error_t serialize_query(
     rc = bowie_bencode_begin_dict(w);
     if (rc != BOWIE_OK) return rc;
 
-    rc = write_dict_key(w, "t");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_span(w, msg->tid, msg->tid_len);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "y");
-    if (rc != BOWIE_OK) return rc;
-    {
-        bowie_span_t s = { (const uint8_t *)"q", 1u };
-        rc = bowie_bencode_write_str(w, s);
-        if (rc != BOWIE_OK) return rc;
-    }
-
-    rc = write_dict_key(w, "q");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_query_name(w, msg->query_type);
-    if (rc != BOWIE_OK) return rc;
-
+    /* "a" -> arguments dictionary */
     rc = write_dict_key(w, "a");
     if (rc != BOWIE_OK) return rc;
     rc = bowie_bencode_begin_dict(w);
@@ -952,6 +942,15 @@ static bowie_error_t serialize_query(
         break;
 
     case BOWIE_DHT_QUERY_ANNOUNCE_PEER:
+        /*
+         * Keys in byte order: "id", "implied_port",
+         * "info_hash", "port", "token".
+         */
+        rc = write_dict_key(w, "implied_port");
+        if (rc != BOWIE_OK) return rc;
+        rc = bowie_bencode_write_int(w, msg->implied_port ? 1 : 0);
+        if (rc != BOWIE_OK) return rc;
+
         rc = write_dict_key(w, "info_hash");
         if (rc != BOWIE_OK) return rc;
         rc = write_info_hash(w, &msg->info_hash);
@@ -966,13 +965,6 @@ static bowie_error_t serialize_query(
         if (rc != BOWIE_OK) return rc;
         rc = write_token(w, &msg->token);
         if (rc != BOWIE_OK) return rc;
-
-        if (msg->implied_port) {
-            rc = write_dict_key(w, "implied_port");
-            if (rc != BOWIE_OK) return rc;
-            rc = bowie_bencode_write_int(w, 1);
-            if (rc != BOWIE_OK) return rc;
-        }
         break;
 
     default:
@@ -982,8 +974,34 @@ static bowie_error_t serialize_query(
     rc = bowie_bencode_end_dict(w);
     if (rc != BOWIE_OK) return rc;
 
+    /* "q" -> query name */
+    rc = write_dict_key(w, "q");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_query_name(w, msg->query_type);
+    if (rc != BOWIE_OK) return rc;
+
+    /* "t" -> transaction id */
+    rc = write_dict_key(w, "t");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_span(w, msg->tid, msg->tid_len);
+    if (rc != BOWIE_OK) return rc;
+
+    /* "y" -> "q" */
+    rc = write_dict_key(w, "y");
+    if (rc != BOWIE_OK) return rc;
+    {
+        bowie_span_t s = { (const uint8_t *)"q", 1u };
+        rc = bowie_bencode_write_str(w, s);
+        if (rc != BOWIE_OK) return rc;
+    }
+
     return bowie_bencode_end_dict(w);
 }
+
+/*
+ * Serialize a response. The keys are written in byte order:
+ * "r", "t", "y".
+ */
 
 static bowie_error_t serialize_response(
     const bowie_dht_message_t *msg,
@@ -994,19 +1012,7 @@ static bowie_error_t serialize_response(
     rc = bowie_bencode_begin_dict(w);
     if (rc != BOWIE_OK) return rc;
 
-    rc = write_dict_key(w, "t");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_span(w, msg->tid, msg->tid_len);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "y");
-    if (rc != BOWIE_OK) return rc;
-    {
-        bowie_span_t s = { (const uint8_t *)"r", 1u };
-        rc = bowie_bencode_write_str(w, s);
-        if (rc != BOWIE_OK) return rc;
-    }
-
+    /* "r" -> response dictionary */
     rc = write_dict_key(w, "r");
     if (rc != BOWIE_OK) return rc;
     rc = bowie_bencode_begin_dict(w);
@@ -1021,6 +1027,13 @@ static bowie_error_t serialize_response(
         rc = write_dict_key(w, "nodes");
         if (rc != BOWIE_OK) return rc;
         rc = write_compact_nodes(w, msg->nodes, msg->nodes_count);
+        if (rc != BOWIE_OK) return rc;
+    }
+
+    if (!bowie_dht_token_is_zero(&msg->token)) {
+        rc = write_dict_key(w, "token");
+        if (rc != BOWIE_OK) return rc;
+        rc = write_token(w, &msg->token);
         if (rc != BOWIE_OK) return rc;
     }
 
@@ -1045,18 +1058,31 @@ static bowie_error_t serialize_response(
         if (rc != BOWIE_OK) return rc;
     }
 
-    if (!bowie_dht_token_is_zero(&msg->token)) {
-        rc = write_dict_key(w, "token");
-        if (rc != BOWIE_OK) return rc;
-        rc = write_token(w, &msg->token);
-        if (rc != BOWIE_OK) return rc;
-    }
-
     rc = bowie_bencode_end_dict(w);
     if (rc != BOWIE_OK) return rc;
 
+    /* "t" -> transaction id */
+    rc = write_dict_key(w, "t");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_span(w, msg->tid, msg->tid_len);
+    if (rc != BOWIE_OK) return rc;
+
+    /* "y" -> "r" */
+    rc = write_dict_key(w, "y");
+    if (rc != BOWIE_OK) return rc;
+    {
+        bowie_span_t s = { (const uint8_t *)"r", 1u };
+        rc = bowie_bencode_write_str(w, s);
+        if (rc != BOWIE_OK) return rc;
+    }
+
     return bowie_bencode_end_dict(w);
 }
+
+/*
+ * Serialize an error. The keys are written in byte order:
+ * "e", "t", "y".
+ */
 
 static bowie_error_t serialize_error(
     const bowie_dht_message_t *msg,
@@ -1067,19 +1093,7 @@ static bowie_error_t serialize_error(
     rc = bowie_bencode_begin_dict(w);
     if (rc != BOWIE_OK) return rc;
 
-    rc = write_dict_key(w, "t");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_span(w, msg->tid, msg->tid_len);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "y");
-    if (rc != BOWIE_OK) return rc;
-    {
-        bowie_span_t s = { (const uint8_t *)"e", 1u };
-        rc = bowie_bencode_write_str(w, s);
-        if (rc != BOWIE_OK) return rc;
-    }
-
+    /* "e" -> [ code, message ] */
     rc = write_dict_key(w, "e");
     if (rc != BOWIE_OK) return rc;
     rc = bowie_bencode_begin_list(w);
@@ -1097,6 +1111,21 @@ static bowie_error_t serialize_error(
 
     rc = bowie_bencode_end_list(w);
     if (rc != BOWIE_OK) return rc;
+
+    /* "t" -> transaction id */
+    rc = write_dict_key(w, "t");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_span(w, msg->tid, msg->tid_len);
+    if (rc != BOWIE_OK) return rc;
+
+    /* "y" -> "e" */
+    rc = write_dict_key(w, "y");
+    if (rc != BOWIE_OK) return rc;
+    {
+        bowie_span_t s = { (const uint8_t *)"e", 1u };
+        rc = bowie_bencode_write_str(w, s);
+        if (rc != BOWIE_OK) return rc;
+    }
 
     return bowie_bencode_end_dict(w);
 }
