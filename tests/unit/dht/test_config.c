@@ -354,7 +354,7 @@ START_TEST(test_normalize_relay_wins_over_metadata)
     c.store_metadata = 1;
     (void)bowie_dht_config_normalize(&c);
     ck_assert_int_eq(c.store_metadata, 0);
-    c_assert_int_eq(c.relay_only, 1);
+    ck_assert_int_eq(c.relay_only, 1);
 }
 END_TEST
 
