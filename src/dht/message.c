@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -163,10 +163,6 @@ bowie_dht_query_type_t bowie_dht_query_type_from_name(
  *   20 bytes   node id
  *    4 bytes   IPv4 address, network byte order
  *    2 bytes   port, big-endian
- *
- * The parser reads the IPv4 address and stores it in the
- * bowie_addr_t as a four-byte IPv4 address. The serializer
- * writes the four bytes in the same order.
  */
 
 bowie_error_t bowie_dht_compact_nodes_decode(
@@ -191,20 +187,13 @@ bowie_error_t bowie_dht_compact_nodes_decode(
         return BOWIE_ERR_TOO_SMALL;
     }
 
-    /*
-     * Write the nodes into the arena, starting at index 0.
-     * The arena's used counter is reset by the caller; here
-     * we write from 0 and set the counter to count.
-     */
     for (size_t i = 0u; i < count; i++) {
         const uint8_t *p = encoded.data + i * BOWIE_DHT_COMPACT_NODE_LEN;
 
         bowie_dht_compact_node_t *n = &arena->nodes[i];
 
-        /* Node id. */
         memcpy(n->id.bytes, p, BOWIE_DHT_NODE_ID_LEN);
 
-        /* Address. */
         memset(&n->addr, 0, sizeof(n->addr));
         n->addr.family = BOWIE_AF_INET;
         n->addr.addr[0] = p[20];
@@ -212,7 +201,6 @@ bowie_error_t bowie_dht_compact_nodes_decode(
         n->addr.addr[2] = p[22];
         n->addr.addr[3] = p[23];
 
-        /* Port, big-endian. */
         uint16_t port_be = (uint16_t)((uint16_t)p[24] << 8)
                          | (uint16_t)p[25];
         n->addr.port = port_be;
@@ -363,31 +351,7 @@ bowie_error_t bowie_dht_compact_peers_encode(
 
 /*
  * ============================================================================
- * END OF PART 1 AND 2
- * ============================================================================
- */
-/*
- * ============================================================================
  * PART 3 — MESSAGE PARSE
- * ============================================================================
- *
- * Parse a bencoded DHT message into a struct.
- *
- * The top-level structure is a bencode dictionary. The parser
- * reads the keys "t", "y", "q", "a", "r", and "e" and fills
- * the struct.
- *
- * A missing required key is an error. A key with the wrong
- * type is an error. A key that does not apply to the message
- * type is ignored.
- *
- * The parser reads the bencode tree with the accessors from
- * the bencode module. It does not walk the tree by hand.
- */
-
-/*
- * ============================================================================
- * INTERNAL — READ HELPERS
  * ============================================================================
  */
 
@@ -405,10 +369,6 @@ static bowie_error_t get_dict_field(
     return BOWIE_OK;
 }
 
-/*
- * Read the node id from a dict field. The field is a 20-byte
- * byte string.
- */
 static bowie_error_t read_node_id(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *dict,
@@ -434,9 +394,6 @@ static bowie_error_t read_node_id(
     return BOWIE_OK;
 }
 
-/*
- * Read an info hash from a dict field.
- */
 static bowie_error_t read_info_hash(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *dict,
@@ -462,9 +419,6 @@ static bowie_error_t read_info_hash(
     return BOWIE_OK;
 }
 
-/*
- * Read a token from a dict field.
- */
 static bowie_error_t read_token(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *dict,
@@ -494,10 +448,6 @@ static bowie_error_t read_token(
     return BOWIE_OK;
 }
 
-/*
- * Read a uint16 from a dict field. The value is a bencode
- * integer.
- */
 static bowie_error_t read_uint16(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *dict,
@@ -522,30 +472,6 @@ static bowie_error_t read_uint16(
     return BOWIE_OK;
 }
 
-/*
- * Read an int from a dict field. The value is a bencode
- * integer. A missing field is an error; a caller that wants
- * an optional field uses read_int_opt.
- */
-static bowie_error_t read_int(
-    const bowie_bencode_arena_t *arena,
-    const bowie_bencode_value_t *dict,
-    const char                  *key,
-    int64_t                     *out)
-{
-    const bowie_bencode_value_t *v = NULL;
-    (void)get_dict_field(arena, dict, key, &v);
-    if (v == NULL) {
-        return BOWIE_ERR_FORMAT;
-    }
-
-    return bowie_bencode_get_int(v, out);
-}
-
-/*
- * Read an optional int from a dict field. A missing field
- * leaves *out unchanged.
- */
 static bowie_error_t read_int_opt(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *dict,
@@ -560,20 +486,11 @@ static bowie_error_t read_int_opt(
     return bowie_bencode_get_int(v, out);
 }
 
-/*
- * ============================================================================
- * INTERNAL — PARSE QUERY
- * ============================================================================
- */
-
 static bowie_error_t parse_query(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *root,
     bowie_dht_message_t         *out)
 {
-    /*
-     * The "q" field is the query name. It is a byte string.
-     */
     const bowie_bencode_value_t *q = NULL;
     (void)get_dict_field(arena, root, "q", &q);
     if (q == NULL) {
@@ -591,10 +508,6 @@ static bowie_error_t parse_query(
         return BOWIE_ERR_FORMAT;
     }
 
-    /*
-     * The "a" field is the query arguments. It is a
-     * dictionary.
-     */
     const bowie_bencode_value_t *a = NULL;
     (void)get_dict_field(arena, root, "a", &a);
     if (a == NULL) {
@@ -604,9 +517,6 @@ static bowie_error_t parse_query(
         return BOWIE_ERR_TYPE;
     }
 
-    /*
-     * Every query has a sender id.
-     */
     rc = read_node_id(arena, a, "id", &out->sender_id);
     if (rc != BOWIE_OK) {
         return rc;
@@ -614,7 +524,6 @@ static bowie_error_t parse_query(
 
     switch (out->query_type) {
     case BOWIE_DHT_QUERY_PING:
-        /* No additional fields. */
         break;
 
     case BOWIE_DHT_QUERY_FIND_NODE:
@@ -646,10 +555,6 @@ static bowie_error_t parse_query(
         if (rc != BOWIE_OK) {
             return rc;
         }
-        /*
-         * "implied_port" is optional. A missing field means
-         * 0.
-         */
         int64_t implied = 0;
         (void)read_int_opt(arena, a, "implied_port", &implied);
         out->implied_port = (implied != 0) ? 1 : 0;
@@ -662,22 +567,12 @@ static bowie_error_t parse_query(
     return BOWIE_OK;
 }
 
-/*
- * ============================================================================
- * INTERNAL — PARSE RESPONSE
- * ============================================================================
- */
-
 static bowie_error_t parse_response(
     const bowie_bencode_arena_t *arena,
     const bowie_bencode_value_t *root,
     bowie_dht_message_arena_t   *msg_arena,
     bowie_dht_message_t         *out)
 {
-    /*
-     * The "r" field is the response values. It is a
-     * dictionary.
-     */
     const bowie_bencode_value_t *r = NULL;
     (void)get_dict_field(arena, root, "r", &r);
     if (r == NULL) {
@@ -687,22 +582,12 @@ static bowie_error_t parse_response(
         return BOWIE_ERR_TYPE;
     }
 
-    /*
-     * Every response has a sender id.
-     */
     bowie_error_t rc = read_node_id(arena, r, "id",
                                     &out->sender_id);
     if (rc != BOWIE_OK) {
         return rc;
     }
 
-    /*
-     * A response may have a "nodes" field (compact node
-     * list) and a "values" field (compact peer list). Both
-     * are optional. The response type is determined by
-     * which fields are present, not by the query it
-     * answers.
-     */
     const bowie_bencode_value_t *nodes_v = NULL;
     (void)get_dict_field(arena, r, "nodes", &nodes_v);
     if (nodes_v != NULL) {
@@ -726,18 +611,9 @@ static bowie_error_t parse_response(
         bowie_bencode_list_t l;
         rc = bowie_bencode_get_list(values_v, &l);
         if (rc != BOWIE_OK) {
-            /*
-             * A "values" field that is not a list is a
-             * format error. Mainline always sends a list.
-             */
             return rc;
         }
 
-        /*
-         * Each element of the list is a 6-byte byte
-         * string. The decoder fills the arena's peer
-         * array. The decoder is called once per element.
-         */
         size_t total = 0u;
         for (size_t i = 0u; i < l.count; i++) {
             const bowie_bencode_value_t *v =
@@ -752,10 +628,6 @@ static bowie_error_t parse_response(
                 return rc;
             }
 
-            /*
-             * Each element is one 6-byte peer entry. A
-             * shorter or longer entry is a format error.
-             */
             if (s.len != BOWIE_DHT_COMPACT_PEER_LEN) {
                 return BOWIE_ERR_FORMAT;
             }
@@ -766,11 +638,6 @@ static bowie_error_t parse_response(
             return BOWIE_ERR_TOO_SMALL;
         }
 
-        /*
-         * Second pass: fill the arena. The decoder writes
-         * the peers into the arena at index 0..count-1.
-         * We accumulate them one at a time.
-         */
         size_t written = 0u;
         for (size_t i = 0u; i < l.count; i++) {
             const bowie_bencode_value_t *v =
@@ -796,11 +663,6 @@ static bowie_error_t parse_response(
         out->peers_count = written;
     }
 
-    /*
-     * A response to get_peers carries a "token" field. It
-     * is optional; a response to other queries does not
-     * carry it.
-     */
     const bowie_bencode_value_t *token_v = NULL;
     (void)get_dict_field(arena, r, "token", &token_v);
     if (token_v != NULL) {
@@ -812,12 +674,6 @@ static bowie_error_t parse_response(
 
     return BOWIE_OK;
 }
-
-/*
- * ============================================================================
- * INTERNAL — PARSE ERROR
- * ============================================================================
- */
 
 static bowie_error_t parse_error(
     const bowie_bencode_arena_t *arena,
@@ -867,12 +723,6 @@ static bowie_error_t parse_error(
     return BOWIE_OK;
 }
 
-/*
- * ============================================================================
- * PARSE — PUBLIC ENTRY POINT
- * ============================================================================
- */
-
 bowie_error_t bowie_dht_message_parse(
     bowie_span_t                    encoded,
     bowie_bencode_arena_t          *benc_arena,
@@ -884,15 +734,8 @@ bowie_error_t bowie_dht_message_parse(
         return BOWIE_ERR_NULL_ARG;
     }
 
-    /*
-     * Reset the output. The caller may reuse the struct.
-     */
     memset(out_msg, 0, sizeof(*out_msg));
 
-    /*
-     * Reset the message arena's used counters. The capacity
-     * is unchanged.
-     */
     msg_arena->nodes_used = 0u;
     msg_arena->peers_used = 0u;
 
@@ -907,10 +750,6 @@ bowie_error_t bowie_dht_message_parse(
         return BOWIE_ERR_TYPE;
     }
 
-    /*
-     * Read the transaction id. It is a byte string. The
-     * length is at most BOWIE_DHT_MSG_TID_MAX.
-     */
     const bowie_bencode_value_t *t = NULL;
     (void)get_dict_field(benc_arena, root, "t", &t);
     if (t == NULL) {
@@ -929,10 +768,6 @@ bowie_error_t bowie_dht_message_parse(
     }
     out_msg->tid_len = tid.len;
 
-    /*
-     * Read the message type. It is a byte string of length
-     * 1: "q", "r", or "e".
-     */
     const bowie_bencode_value_t *y = NULL;
     (void)get_dict_field(benc_arena, root, "y", &y);
     if (y == NULL) {
@@ -970,28 +805,8 @@ bowie_error_t bowie_dht_message_parse(
  * ============================================================================
  * PART 4 — MESSAGE SERIALIZE
  * ============================================================================
- *
- * Serialize a message into a bencode writer.
- *
- * The writer is a caller-supplied buffer. The function writes
- * the top-level dictionary and the fields that apply to the
- * message type.
- *
- * A field that does not apply to the type is not written. A
- * message type that is UNKNOWN is an error.
- *
- * The compact node and peer lists are written as byte strings.
- * The bytes are built in a small stack buffer. A list longer
- * than the stack buffer is written in chunks.
  */
 
-/*
- * The maximum number of compact entries that are built in one
- * stack buffer before being written. A list longer than this
- * is written in several chunks. The chunk size is a
- * compromise: large enough that the common case is one chunk,
- * small enough that the stack buffer is not big.
- */
 #define COMPACT_CHUNK_NODES  16
 #define COMPACT_CHUNK_PEERS  32
 
@@ -1063,38 +878,6 @@ static bowie_error_t write_compact_nodes(
     return BOWIE_OK;
 }
 
-static bowie_error_t write_compact_peers(
-    bowie_bencode_writer_t          *w,
-    const bowie_dht_compact_peer_t  *peers,
-    size_t                           count)
-{
-    uint8_t chunk[COMPACT_CHUNK_PEERS * BOWIE_DHT_COMPACT_PEER_LEN];
-
-    size_t written = 0u;
-    while (written < count) {
-        size_t take = count - written;
-        if (take > COMPACT_CHUNK_PEERS) {
-            take = COMPACT_CHUNK_PEERS;
-        }
-
-        size_t chunk_len = 0u;
-        bowie_error_t rc = bowie_dht_compact_peers_encode(
-            peers + written, take,
-            chunk, sizeof(chunk), &chunk_len);
-        if (rc != BOWIE_OK) {
-            return rc;
-        }
-
-        rc = write_span(w, chunk, chunk_len);
-        if (rc != BOWIE_OK) {
-            return rc;
-        }
-
-        written += take;
-    }
-    return BOWIE_OK;
-}
-
 static bowie_error_t write_query_name(bowie_bencode_writer_t *w,
                                       bowie_dht_query_type_t q)
 {
@@ -1112,12 +895,6 @@ static bowie_error_t write_query_name(bowie_bencode_writer_t *w,
     s.len  = strlen(name);
     return bowie_bencode_write_str(w, s);
 }
-
-/*
- * ============================================================================
- * INTERNAL — SERIALIZE QUERY
- * ============================================================================
- */
 
 static bowie_error_t serialize_query(
     const bowie_dht_message_t *msg,
@@ -1183,197 +960,4 @@ static bowie_error_t serialize_query(
         rc = write_dict_key(w, "port");
         if (rc != BOWIE_OK) return rc;
         rc = bowie_bencode_write_int(w, (int64_t)msg->port);
-        if (rc != BOWIE_OK) return rc;
-
-        rc = write_dict_key(w, "token");
-        if (rc != BOWIE_OK) return rc;
-        rc = write_token(w, &msg->token);
-        if (rc != BOWIE_OK) return rc;
-
-        if (msg->implied_port) {
-            rc = write_dict_key(w, "implied_port");
-            if (rc != BOWIE_OK) return rc;
-            rc = bowie_bencode_write_int(w, 1);
-            if (rc != BOWIE_OK) return rc;
-        }
-        break;
-
-    default:
-        return BOWIE_ERR_INVAL;
-    }
-
-    rc = bowie_bencode_end_dict(w);
-    if (rc != BOWIE_OK) return rc;
-
-    return bowie_bencode_end_dict(w);
-}
-
-/*
- * ============================================================================
- * INTERNAL — SERIALIZE RESPONSE
- * ============================================================================
- */
-
-static bowie_error_t serialize_response(
-    const bowie_dht_message_t *msg,
-    bowie_bencode_writer_t    *w)
-{
-    bowie_error_t rc;
-
-    rc = bowie_bencode_begin_dict(w);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "t");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_span(w, msg->tid, msg->tid_len);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "y");
-    if (rc != BOWIE_OK) return rc;
-    {
-        bowie_span_t s = { (const uint8_t *)"r", 1u };
-        rc = bowie_bencode_write_str(w, s);
-        if (rc != BOWIE_OK) return rc;
-    }
-
-    rc = write_dict_key(w, "r");
-    if (rc != BOWIE_OK) return rc;
-    rc = bowie_bencode_begin_dict(w);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "id");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_node_id(w, &msg->sender_id);
-    if (rc != BOWIE_OK) return rc;
-
-    if (msg->nodes_count > 0u) {
-        rc = write_dict_key(w, "nodes");
-        if (rc != BOWIE_OK) return rc;
-        rc = write_compact_nodes(w, msg->nodes, msg->nodes_count);
-        if (rc != BOWIE_OK) return rc;
-    }
-
-    if (msg->peers_count > 0u) {
-        /*
-         * Mainline allows "values" to be either a list
-         * of 6-byte strings or a single concatenated
-         * byte string. This writer always uses the list
-         * form, which is the more common one.
-         */
-        rc = write_dict_key(w, "values");
-        if (rc != BOWIE_OK) return rc;
-        rc = bowie_bencode_begin_list(w);
-        if (rc != BOWIE_OK) return rc;
-
-        for (size_t i = 0u; i < msg->peers_count; i++) {
-            uint8_t buf[BOWIE_DHT_COMPACT_PEER_LEN];
-            size_t  n = 0u;
-            rc = bowie_dht_compact_peers_encode(
-                &msg->peers[i], 1u, buf, sizeof(buf), &n);
-            if (rc != BOWIE_OK) return rc;
-
-            rc = write_span(w, buf, n);
-            if (rc != BOWIE_OK) return rc;
-        }
-
-        rc = bowie_bencode_end_list(w);
-        if (rc != BOWIE_OK) return rc;
-    }
-
-    if (!bowie_dht_token_is_zero(&msg->token)) {
-        rc = write_dict_key(w, "token");
-        if (rc != BOWIE_OK) return rc;
-        rc = write_token(w, &msg->token);
-        if (rc != BOWIE_OK) return rc;
-    }
-
-    rc = bowie_bencode_end_dict(w);
-    if (rc != BOWIE_OK) return rc;
-
-    return bowie_bencode_end_dict(w);
-}
-
-/*
- * ============================================================================
- * INTERNAL — SERIALIZE ERROR
- * ============================================================================
- */
-
-static bowie_error_t serialize_error(
-    const bowie_dht_message_t *msg,
-    bowie_bencode_writer_t    *w)
-{
-    bowie_error_t rc;
-
-    rc = bowie_bencode_begin_dict(w);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "t");
-    if (rc != BOWIE_OK) return rc;
-    rc = write_span(w, msg->tid, msg->tid_len);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = write_dict_key(w, "y");
-    if (rc != BOWIE_OK) return rc;
-    {
-        bowie_span_t s = { (const uint8_t *)"e", 1u };
-        rc = bowie_bencode_write_str(w, s);
-        if (rc != BOWIE_OK) return rc;
-    }
-
-    rc = write_dict_key(w, "e");
-    if (rc != BOWIE_OK) return rc;
-    rc = bowie_bencode_begin_list(w);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = bowie_bencode_write_int(w, (int64_t)msg->error_code);
-    if (rc != BOWIE_OK) return rc;
-
-    size_t msg_len = msg->error_message.len;
-    if (msg_len > BOWIE_DHT_MSG_ERR_MAX) {
-        msg_len = BOWIE_DHT_MSG_ERR_MAX;
-    }
-    rc = write_span(w, msg->error_message.data, msg_len);
-    if (rc != BOWIE_OK) return rc;
-
-    rc = bowie_bencode_end_list(w);
-    if (rc != BOWIE_OK) return rc;
-
-    return bowie_bencode_end_dict(w);
-}
-
-/*
- * ============================================================================
- * SERIALIZE — PUBLIC ENTRY POINT
- * ============================================================================
- */
-
-bowie_error_t bowie_dht_message_serialize(
-    const bowie_dht_message_t *msg,
-    bowie_bencode_writer_t    *w)
-{
-    if (msg == NULL || w == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-
-    switch (msg->type) {
-    case BOWIE_DHT_MSG_QUERY:
-        return serialize_query(msg, w);
-
-    case BOWIE_DHT_MSG_RESPONSE:
-        return serialize_response(msg, w);
-
-    case BOWIE_DHT_MSG_ERROR:
-        return serialize_error(msg, w);
-
-    case BOWIE_DHT_MSG_UNKNOWN:
-    default:
-        return BOWIE_ERR_INVAL;
-    }
-}
-
-/*
- * ============================================================================
- * END OF FILE
- * ============================================================================
- */
+        if (rc != BOW
