@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -23,17 +23,10 @@
  *
  * Unit tests for src/dht/message.c.
  *
- * The tests cover:
- *
- *   - Name helpers: type names, query name parsing.
- *   - Compact format: node and peer decode and encode.
- *   - Parse: query, response, error.
- *   - Serialize: query, response, error.
- *   - Round trip: serialize then parse, check the fields.
- *
- * The test vectors are the Mainline messages in the BitTorrent
- * DHT specification, adapted for Bowie's node id and info hash
- * sizes.
+ * The test vectors are built by hand. The dictionary keys are
+ * written in byte order: "a" < "q" < "t" < "y", "e" < "r" <
+ * "t" < "y", and so on. The decoder is strict, so an unsorted
+ * key is a format error.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -462,31 +455,75 @@ END_TEST
  * ============================================================================
  * PARSE — PING QUERY
  * ============================================================================
+ *
+ * The dictionary keys are written in byte order:
+ *   "a" (0x61) < "q" (0x71) < "t" (0x74) < "y" (0x79)
+ *
+ * The outer dictionary:
+ *   "a" -> { "id" : <20 bytes> }
+ *   "q" -> "ping"
+ *   "t" -> "aa"
+ *   "y" -> "q"
  */
 
 START_TEST(test_parse_ping_query)
 {
-    /*
-     * A minimal ping query:
-     * d1:t2:aa1:y1:q1:q4:ping1:ad2:id20:...ee
-     */
-    const char *wire =
-        "d1:t2:aa"
-        "1:y1:q"
-        "1:q4:ping"
-        "1:ad2:id20:";
     uint8_t id_bytes[20];
     for (size_t i = 0u; i < 20u; i++) {
         id_bytes[i] = (uint8_t)(1u + i);
     }
 
     uint8_t buf[128];
-    size_t  pos = 0u;
-    memcpy(buf, wire, strlen(wire));
-    pos = strlen(wire);
+    size_t pos = 0u;
+
+    /* d */
+    buf[pos++] = 'd';
+
+    /* "a" -> { "id" : <20 bytes> } */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'a';
+    buf[pos++] = 'd';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'i';
+    buf[pos++] = 'd';
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, id_bytes, 20);
     pos += 20;
     buf[pos++] = 'e';
+
+    /* "q" -> "ping" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+    buf[pos++] = '4';
+    buf[pos++] = ':';
+    buf[pos++] = 'p';
+    buf[pos++] = 'i';
+    buf[pos++] = 'n';
+    buf[pos++] = 'g';
+
+    /* "t" -> "aa" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 't';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'a';
+    buf[pos++] = 'a';
+
+    /* "y" -> "q" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'y';
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+
+    /* end of dictionary */
     buf[pos++] = 'e';
 
     bowie_span_t in = { buf, pos };
@@ -510,15 +547,13 @@ END_TEST
  * ============================================================================
  * PARSE — FIND_NODE QUERY
  * ============================================================================
+ *
+ * Outer keys: "a", "q", "t", "y".
+ * Inner "a" keys: "id", "target" — "id" (0x69) < "target" (0x74).
  */
 
 START_TEST(test_parse_find_node_query)
 {
-    const char *wire =
-        "d1:t2:bb"
-        "1:y1:q"
-        "1:q9:find_node"
-        "1:ad2:id20:";
     uint8_t id_bytes[20];
     for (size_t i = 0u; i < 20u; i++) {
         id_bytes[i] = (uint8_t)(10u + i);
@@ -530,16 +565,69 @@ START_TEST(test_parse_find_node_query)
 
     uint8_t buf[256];
     size_t pos = 0u;
-    memcpy(buf, wire, strlen(wire));
-    pos = strlen(wire);
+
+    /* d */
+    buf[pos++] = 'd';
+
+    /* "a" -> { "id" : <20>, "target" : <20> } */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'a';
+    buf[pos++] = 'd';
+
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'i';
+    buf[pos++] = 'd';
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, id_bytes, 20);
     pos += 20;
-    const char *mid = "6:target20:";
-    memcpy(buf + pos, mid, strlen(mid));
-    pos += strlen(mid);
+
+    buf[pos++] = '6';
+    buf[pos++] = ':';
+    buf[pos++] = 't';
+    buf[pos++] = 'a';
+    buf[pos++] = 'r';
+    buf[pos++] = 'g';
+    buf[pos++] = 'e';
+    buf[pos++] = 't';
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, target_bytes, 20);
     pos += 20;
+
     buf[pos++] = 'e';
+
+    /* "q" -> "find_node" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+    buf[pos++] = '9';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "find_node", 9u);
+    pos += 9u;
+
+    /* "t" -> "bb" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 't';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'b';
+    buf[pos++] = 'b';
+
+    /* "y" -> "q" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'y';
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+
+    /* end of dictionary */
     buf[pos++] = 'e';
 
     bowie_span_t in = { buf, pos };
@@ -565,11 +653,6 @@ END_TEST
 
 START_TEST(test_parse_get_peers_query)
 {
-    const char *wire =
-        "d1:t2:cc"
-        "1:y1:q"
-        "1:q9:get_peers"
-        "1:ad2:id20:";
     uint8_t id_bytes[20] = { 0 };
     uint8_t ih_bytes[20] = { 0 };
     ih_bytes[0] = 0xAB;
@@ -577,16 +660,63 @@ START_TEST(test_parse_get_peers_query)
 
     uint8_t buf[256];
     size_t pos = 0u;
-    memcpy(buf, wire, strlen(wire));
-    pos = strlen(wire);
+
+    buf[pos++] = 'd';
+
+    /* "a" -> { "id" : <20>, "info_hash" : <20> } */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'a';
+    buf[pos++] = 'd';
+
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'i';
+    buf[pos++] = 'd';
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, id_bytes, 20);
     pos += 20;
-    const char *mid = "9:info_hash20:";
-    memcpy(buf + pos, mid, strlen(mid));
-    pos += strlen(mid);
+
+    buf[pos++] = '9';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "info_hash", 9u);
+    pos += 9u;
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, ih_bytes, 20);
     pos += 20;
+
     buf[pos++] = 'e';
+
+    /* "q" -> "get_peers" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+    buf[pos++] = '9';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "get_peers", 9u);
+    pos += 9u;
+
+    /* "t" -> "cc" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 't';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'c';
+    buf[pos++] = 'c';
+
+    /* "y" -> "q" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'y';
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+
     buf[pos++] = 'e';
 
     bowie_span_t in = { buf, pos };
@@ -608,45 +738,111 @@ END_TEST
  * ============================================================================
  * PARSE — ANNOUNCE_PEER QUERY
  * ============================================================================
+ *
+ * The "a" dictionary keys: "id", "implied_port", "info_hash",
+ * "port", "token". Sorted: "id" (0x69) < "implied_port"
+ * (0x69 0x6d) < "info_hash" (0x69 0x6e) < "port" (0x70) <
+ * "token" (0x74).
  */
 
 START_TEST(test_parse_announce_peer_query)
 {
-    const char *wire =
-        "d1:t2:dd"
-        "1:y1:q"
-        "1:q13:announce_peer"
-        "1:ad2:id20:";
     uint8_t id_bytes[20] = { 0 };
     uint8_t ih_bytes[20] = { 0 };
     ih_bytes[5] = 0x42;
 
     uint8_t buf[512];
     size_t pos = 0u;
-    memcpy(buf, wire, strlen(wire));
-    pos = strlen(wire);
+
+    buf[pos++] = 'd';
+
+    /* "a" -> { ... } */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'a';
+    buf[pos++] = 'd';
+
+    /* "id" */
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'i';
+    buf[pos++] = 'd';
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, id_bytes, 20);
     pos += 20;
 
-    const char *mid = "9:info_hash20:";
-    memcpy(buf + pos, mid, strlen(mid));
-    pos += strlen(mid);
+    /* "implied_port" */
+    buf[pos++] = '1';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "implied_port", 12u);
+    pos += 12u;
+    buf[pos++] = 'i';
+    buf[pos++] = '1';
+    buf[pos++] = 'e';
+
+    /* "info_hash" */
+    buf[pos++] = '9';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "info_hash", 9u);
+    pos += 9u;
+    buf[pos++] = '2';
+    buf[pos++] = '0';
+    buf[pos++] = ':';
     memcpy(buf + pos, ih_bytes, 20);
     pos += 20;
 
-    const char *port = "4:porti6881e";
-    memcpy(buf + pos, port, strlen(port));
-    pos += strlen(port);
+    /* "port" */
+    buf[pos++] = '4';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "port", 4u);
+    pos += 4u;
+    buf[pos++] = 'i';
+    memcpy(buf + pos, "6881", 4u);
+    pos += 4u;
+    buf[pos++] = 'e';
 
-    const char *tok = "5:token4:abcd";
-    memcpy(buf + pos, tok, strlen(tok));
-    pos += strlen(tok);
-
-    const char *ip = "12:implied_porti1e";
-    memcpy(buf + pos, ip, strlen(ip));
-    pos += strlen(ip);
+    /* "token" */
+    buf[pos++] = '5';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "token", 5u);
+    pos += 5u;
+    buf[pos++] = '4';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "abcd", 4u);
+    pos += 4u;
 
     buf[pos++] = 'e';
+
+    /* "q" -> "announce_peer" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+    buf[pos++] = '1';
+    buf[pos++] = '3';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "announce_peer", 13u);
+    pos += 13u;
+
+    /* "t" -> "dd" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 't';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'd';
+    buf[pos++] = 'd';
+
+    /* "y" -> "q" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'y';
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'q';
+
     buf[pos++] = 'e';
 
     bowie_span_t in = { buf, pos };
@@ -671,24 +867,52 @@ END_TEST
  * ============================================================================
  * PARSE — ERROR
  * ============================================================================
+ *
+ * Outer keys: "e", "t", "y".
  */
 
 START_TEST(test_parse_error)
 {
-    const char *wire = "d1:t2:ee1:y1:e1:eli201e4:oops ee";
-    /*
-     * The exact bytes:
-     *   d
-     *   1:t 2:ee
-     *   1:y 1:e
-     *   1:e l i201e 4:oops e
-     *   e
-     */
-    const char *wire2 =
-        "d1:t2:ee1:y1:e1:eli201e4:oopsee";
+    uint8_t buf[64];
+    size_t pos = 0u;
 
-    bowie_span_t in = span_of(wire2);
-    (void)wire;
+    buf[pos++] = 'd';
+
+    /* "e" -> [ 201, "oops" ] */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'e';
+    buf[pos++] = 'l';
+    buf[pos++] = 'i';
+    memcpy(buf + pos, "201", 3u);
+    pos += 3u;
+    buf[pos++] = 'e';
+    buf[pos++] = '4';
+    buf[pos++] = ':';
+    memcpy(buf + pos, "oops", 4u);
+    pos += 4u;
+    buf[pos++] = 'e';
+
+    /* "t" -> "ee" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 't';
+    buf[pos++] = '2';
+    buf[pos++] = ':';
+    buf[pos++] = 'e';
+    buf[pos++] = 'e';
+
+    /* "y" -> "e" */
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'y';
+    buf[pos++] = '1';
+    buf[pos++] = ':';
+    buf[pos++] = 'e';
+
+    buf[pos++] = 'e';
+
+    bowie_span_t in = { buf, pos };
 
     bowie_bencode_arena_t ba = make_benc_arena();
     bowie_dht_message_arena_t ma = make_msg_arena();
@@ -761,7 +985,7 @@ END_TEST
 
 START_TEST(test_parse_missing_t)
 {
-    /* d1:y1:qe — has y but no t. */
+    /* d1:y1:qe — keys "y" only, missing "t". */
     bowie_bencode_arena_t ba = make_benc_arena();
     bowie_dht_message_arena_t ma = make_msg_arena();
     bowie_dht_message_t msg;
@@ -791,6 +1015,7 @@ START_TEST(test_parse_bad_y)
     bowie_bencode_arena_t ba = make_benc_arena();
     bowie_dht_message_arena_t ma = make_msg_arena();
     bowie_dht_message_t msg;
+    /* keys "t", "y" in order; "y" value is "x". */
     bowie_span_t in = span_of("d1:t2:aa1:y1:xe");
 
     ck_assert_int_eq(
@@ -805,15 +1030,13 @@ START_TEST(test_parse_tid_too_long)
     bowie_dht_message_arena_t ma = make_msg_arena();
     bowie_dht_message_t msg;
     /* tid "abc" is 3 bytes, more than the limit. */
-    bowie_span_t in =
-        span_of("d1:t3:abc1:y1:qe");
+    bowie_span_t in = span_of("d1:t3:abc1:y1:qe");
 
     ck_assert_int_eq(
         bowie_dht_message_parse(in, &ba, &ma, &msg),
         BOWIE_ERR_TOO_LARGE);
 }
 END_TEST
-
 /*
  * ============================================================================
  * ROUND TRIP — QUERY
