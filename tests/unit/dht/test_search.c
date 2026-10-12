@@ -23,17 +23,6 @@
  *
  * Unit tests for src/dht/search.c.
  *
- * The tests cover:
- *
- *   - Lifecycle: init, clear.
- *   - Seeding: seed, seed_routing.
- *   - Step: next_query, query_done.
- *   - Response: add_response, add_peers.
- *   - Status: is_done, finish, fail, timed_out, counters.
- *
- * The tests use deterministic node IDs so that the distance
- * order of the candidates is visible.
- *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
@@ -68,10 +57,20 @@ static void make_target(bowie_dht_node_id_t *id)
     memset(id, 0, sizeof(*id));
 }
 
+/*
+ * Build a node with a non-zero id. A seed of 0 produces an
+ * all-zero id, which is the "unset" value and is rejected by
+ * bowie_dht_node_is_set. To keep seed 0 usable, the second
+ * byte is set to 1 when the seed is 0. The distance is still
+ * dominated by the first byte for the comparison.
+ */
 static void make_node(bowie_dht_node_t *n, uint8_t seed)
 {
     memset(n, 0, sizeof(*n));
     n->id.bytes[0] = seed;
+    if (seed == 0u) {
+        n->id.bytes[1] = 1u;
+    }
     n->addr.family = BOWIE_AF_INET;
     n->addr.addr[0] = 10u;
     n->addr.addr[3] = seed;
