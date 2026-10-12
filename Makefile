@@ -194,6 +194,18 @@ LIB_SRCS := \
     src/crypto/keypair.c \
     src/net/capabilities.c \
     src/net/peer.c \
+    src/dht/types.c \
+    src/dht/bencode.c \
+    src/dht/message.c \
+    src/dht/node.c \
+    src/dht/bucket.c \
+    src/dht/routing.c \
+    src/dht/storage.c \
+    src/dht/token.c \
+    src/dht/security.c \
+    src/dht/search.c \
+    src/dht/config.c \
+    src/dht/dht.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS)
 
@@ -229,7 +241,19 @@ UNIT_TEST_SRCS := \
     tests/unit/crypto/test_sign.c \
     tests/unit/crypto/test_keypair.c \
     tests/unit/net/test_capabilities.c \
-    tests/unit/net/test_peer.c
+    tests/unit/net/test_peer.c \
+    tests/unit/dht/test_types.c \
+    tests/unit/dht/test_bencode.c \
+    tests/unit/dht/test_message.c \
+    tests/unit/dht/test_node.c \
+    tests/unit/dht/test_bucket.c \
+    tests/unit/dht/test_routing.c \
+    tests/unit/dht/test_storage.c \
+    tests/unit/dht/test_token.c \
+    tests/unit/dht/test_security.c \
+    tests/unit/dht/test_search.c \
+    tests/unit/dht/test_config.c \
+    tests/unit/dht/test_dht.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
