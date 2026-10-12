@@ -190,14 +190,7 @@ typedef enum bowie_dht_query_type {
 #define BOWIE_DHT_MSG_TID_MAX       2
 #define BOWIE_DHT_MSG_ERR_MAX     256
 
-/*
- * The size of one compact node entry and one compact peer
- * entry in the IPv4 wire format.
- */
-
-#define BOWIE_DHT_COMPACT_NODE_LEN  26
-#define BOWIE_DHT_COMPACT_PEER_LEN   6
-
+ 
 /*
  * ============================================================================
  * COMPACT NODE
