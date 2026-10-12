@@ -174,7 +174,12 @@ typedef struct bowie_dht_token {
     uint8_t bytes[BOWIE_DHT_TOKEN_MAX];
     size_t  len;
 } bowie_dht_token_t;
-
+/*
+ * The size of one compact node entry and one compact peer
+ * entry in the IPv4 wire format.
+ */
+#define BOWIE_DHT_COMPACT_NODE_LEN  26
+#define BOWIE_DHT_COMPACT_PEER_LEN   6
 /*
  * ============================================================================
  * DISTANCE
