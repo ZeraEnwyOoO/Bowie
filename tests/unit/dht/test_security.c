@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -22,14 +22,6 @@
  * ============================================================================
  *
  * Unit tests for src/dht/security.c.
- *
- * The tests cover:
- *
- *   - Lifecycle: init, clear.
- *   - Node ID verification: BEP 42, level NONE, IPv6 skip.
- *   - The id-byte helper.
- *   - Rate limiting: new address, increment, limit reached,
- *     window expiry, backward clock, table full.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -256,7 +248,7 @@ START_TEST(test_node_id_ok_level_none)
                                         0u, 0u);
     bowie_dht_node_id_t id;
     bowie_addr_t a;
-    make_id(&id, 0x05u);   /* arbitrary */
+    make_id(&id, 0x05u);
     make_addr4(&a, 0x0Au, 6881u);
 
     ck_assert(bowie_dht_sec_node_id_ok(&s, &id, &a));
@@ -265,10 +257,6 @@ END_TEST
 
 START_TEST(test_node_id_ok_basic_match)
 {
-    /*
-     * IP 10.0.0.10: low three bits = 010 = 2.
-     * Node ID first byte low three bits = 010.
-     */
     bowie_dht_security_t s = make_state(BOWIE_DHT_SEC_BASIC,
                                         0u, 0u);
     bowie_dht_node_id_t id;
@@ -282,10 +270,6 @@ END_TEST
 
 START_TEST(test_node_id_ok_basic_mismatch)
 {
-    /*
-     * IP 10.0.0.10: low three bits = 2.
-     * Node ID first byte low three bits = 5.
-     */
     bowie_dht_security_t s = make_state(BOWIE_DHT_SEC_BASIC,
                                         0u, 0u);
     bowie_dht_node_id_t id;
@@ -299,18 +283,13 @@ END_TEST
 
 START_TEST(test_node_id_ok_high_bits_ignored)
 {
-    /*
-     * The check looks at the low three bits only. Two
-     * different first bytes with the same low three bits
-     * both pass.
-     */
     bowie_dht_security_t s = make_state(BOWIE_DHT_SEC_BASIC,
                                         0u, 0u);
     bowie_dht_node_id_t id1;
     bowie_dht_node_id_t id2;
     bowie_addr_t a;
-    make_id(&id1, 0x02u);  /* 0000 0010 */
-    make_id(&id2, 0xFAu);  /* 1111 1010 */
+    make_id(&id1, 0x02u);
+    make_id(&id2, 0xFAu);
     make_addr4(&a, 0x0Au, 6881u);
 
     ck_assert(bowie_dht_sec_node_id_ok(&s, &id1, &a));
@@ -327,7 +306,6 @@ START_TEST(test_node_id_ok_ipv6_skip)
     make_id(&id, 0xFFu);
     make_addr6(&a);
 
-    /* IPv6 addresses are skipped. */
     ck_assert(bowie_dht_sec_node_id_ok(&s, &id, &a));
 }
 END_TEST
@@ -370,7 +348,16 @@ END_TEST
 
 START_TEST(test_rate_no_table)
 {
-    bowie_dht_security_t s = make_state(BOWIE_DHT_SEC_NONE, 0u, 0u);
+    /*
+     * A state with no rate-limit table. The check_rate
+     * function reports BOWIE_ERR_INVAL because there is no
+     * table to use.
+     */
+    bowie_dht_security_t s;
+    memset(&s, 0, sizeof(s));
+    (void)bowie_dht_security_init(&s, BOWIE_DHT_SEC_NONE,
+                                  NULL, 0u, 0u, 0u);
+
     bowie_addr_t a;
     make_addr4(&a, 1u, 6881u);
 
@@ -405,7 +392,6 @@ START_TEST(test_rate_increments)
             bowie_dht_sec_check_rate(&s, &a, 1000u), BOWIE_OK);
     }
 
-    /* The 11th request is rejected. */
     ck_assert_int_eq(
         bowie_dht_sec_check_rate(&s, &a, 1000u),
         BOWIE_ERR_BUSY);
@@ -428,7 +414,6 @@ START_TEST(test_rate_different_addrs)
     ck_assert_int_eq(
         bowie_dht_sec_check_rate(&s, &a1, 1000u), BOWIE_ERR_BUSY);
 
-    /* A different address has its own counter. */
     ck_assert_int_eq(
         bowie_dht_sec_check_rate(&s, &a2, 1000u), BOWIE_OK);
 }
@@ -448,7 +433,6 @@ START_TEST(test_rate_window_expires)
     ck_assert_int_eq(
         bowie_dht_sec_check_rate(&s, &a, 1000u), BOWIE_ERR_BUSY);
 
-    /* After the window, the counter resets. */
     ck_assert_int_eq(
         bowie_dht_sec_check_rate(&s, &a, 3000u), BOWIE_OK);
 }
@@ -456,10 +440,6 @@ END_TEST
 
 START_TEST(test_rate_backward_clock)
 {
-    /*
-     * The clock moves backwards. The window is treated as
-     * not expired; the counter keeps incrementing.
-     */
     bowie_dht_security_t s = make_state(BOWIE_DHT_SEC_STRICT,
                                         2u, 1000u);
     bowie_addr_t a;
@@ -496,10 +476,6 @@ END_TEST
 
 START_TEST(test_rate_existing_addr_when_full)
 {
-    /*
-     * The table is full, but an existing address is not a
-     * new entry; the request is allowed.
-     */
     bowie_dht_security_t s = make_state(BOWIE_DHT_SEC_STRICT,
                                         10u, 1000u);
 
