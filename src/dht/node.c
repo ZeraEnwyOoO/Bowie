@@ -79,7 +79,7 @@
 #include "bowie/err.h"
 #include "dht/types.h"
 #include "dht/node.h"
-#include "dht/message.h"
+ 
 
 /*
  * ============================================================================
