@@ -960,4 +960,173 @@ static bowie_error_t serialize_query(
         rc = write_dict_key(w, "port");
         if (rc != BOWIE_OK) return rc;
         rc = bowie_bencode_write_int(w, (int64_t)msg->port);
-        if (rc != BOW
+        if (rc != BOWIE_OK) return rc;
+
+        rc = write_dict_key(w, "token");
+        if (rc != BOWIE_OK) return rc;
+        rc = write_token(w, &msg->token);
+        if (rc != BOWIE_OK) return rc;
+
+        if (msg->implied_port) {
+            rc = write_dict_key(w, "implied_port");
+            if (rc != BOWIE_OK) return rc;
+            rc = bowie_bencode_write_int(w, 1);
+            if (rc != BOWIE_OK) return rc;
+        }
+        break;
+
+    default:
+        return BOWIE_ERR_INVAL;
+    }
+
+    rc = bowie_bencode_end_dict(w);
+    if (rc != BOWIE_OK) return rc;
+
+    return bowie_bencode_end_dict(w);
+}
+
+static bowie_error_t serialize_response(
+    const bowie_dht_message_t *msg,
+    bowie_bencode_writer_t    *w)
+{
+    bowie_error_t rc;
+
+    rc = bowie_bencode_begin_dict(w);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = write_dict_key(w, "t");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_span(w, msg->tid, msg->tid_len);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = write_dict_key(w, "y");
+    if (rc != BOWIE_OK) return rc;
+    {
+        bowie_span_t s = { (const uint8_t *)"r", 1u };
+        rc = bowie_bencode_write_str(w, s);
+        if (rc != BOWIE_OK) return rc;
+    }
+
+    rc = write_dict_key(w, "r");
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_bencode_begin_dict(w);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = write_dict_key(w, "id");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_node_id(w, &msg->sender_id);
+    if (rc != BOWIE_OK) return rc;
+
+    if (msg->nodes_count > 0u) {
+        rc = write_dict_key(w, "nodes");
+        if (rc != BOWIE_OK) return rc;
+        rc = write_compact_nodes(w, msg->nodes, msg->nodes_count);
+        if (rc != BOWIE_OK) return rc;
+    }
+
+    if (msg->peers_count > 0u) {
+        rc = write_dict_key(w, "values");
+        if (rc != BOWIE_OK) return rc;
+        rc = bowie_bencode_begin_list(w);
+        if (rc != BOWIE_OK) return rc;
+
+        for (size_t i = 0u; i < msg->peers_count; i++) {
+            uint8_t buf[BOWIE_DHT_COMPACT_PEER_LEN];
+            size_t  n = 0u;
+            rc = bowie_dht_compact_peers_encode(
+                &msg->peers[i], 1u, buf, sizeof(buf), &n);
+            if (rc != BOWIE_OK) return rc;
+
+            rc = write_span(w, buf, n);
+            if (rc != BOWIE_OK) return rc;
+        }
+
+        rc = bowie_bencode_end_list(w);
+        if (rc != BOWIE_OK) return rc;
+    }
+
+    if (!bowie_dht_token_is_zero(&msg->token)) {
+        rc = write_dict_key(w, "token");
+        if (rc != BOWIE_OK) return rc;
+        rc = write_token(w, &msg->token);
+        if (rc != BOWIE_OK) return rc;
+    }
+
+    rc = bowie_bencode_end_dict(w);
+    if (rc != BOWIE_OK) return rc;
+
+    return bowie_bencode_end_dict(w);
+}
+
+static bowie_error_t serialize_error(
+    const bowie_dht_message_t *msg,
+    bowie_bencode_writer_t    *w)
+{
+    bowie_error_t rc;
+
+    rc = bowie_bencode_begin_dict(w);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = write_dict_key(w, "t");
+    if (rc != BOWIE_OK) return rc;
+    rc = write_span(w, msg->tid, msg->tid_len);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = write_dict_key(w, "y");
+    if (rc != BOWIE_OK) return rc;
+    {
+        bowie_span_t s = { (const uint8_t *)"e", 1u };
+        rc = bowie_bencode_write_str(w, s);
+        if (rc != BOWIE_OK) return rc;
+    }
+
+    rc = write_dict_key(w, "e");
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_bencode_begin_list(w);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = bowie_bencode_write_int(w, (int64_t)msg->error_code);
+    if (rc != BOWIE_OK) return rc;
+
+    size_t msg_len = msg->error_message.len;
+    if (msg_len > BOWIE_DHT_MSG_ERR_MAX) {
+        msg_len = BOWIE_DHT_MSG_ERR_MAX;
+    }
+    rc = write_span(w, msg->error_message.data, msg_len);
+    if (rc != BOWIE_OK) return rc;
+
+    rc = bowie_bencode_end_list(w);
+    if (rc != BOWIE_OK) return rc;
+
+    return bowie_bencode_end_dict(w);
+}
+
+bowie_error_t bowie_dht_message_serialize(
+    const bowie_dht_message_t *msg,
+    bowie_bencode_writer_t    *w)
+{
+    if (msg == NULL || w == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    switch (msg->type) {
+    case BOWIE_DHT_MSG_QUERY:
+        return serialize_query(msg, w);
+
+    case BOWIE_DHT_MSG_RESPONSE:
+        return serialize_response(msg, w);
+
+    case BOWIE_DHT_MSG_ERROR:
+        return serialize_error(msg, w);
+
+    case BOWIE_DHT_MSG_UNKNOWN:
+    default:
+        return BOWIE_ERR_INVAL;
+    }
+}
+
+/*
+ * ============================================================================
+ * END OF FILE
+ * ============================================================================
+ */
