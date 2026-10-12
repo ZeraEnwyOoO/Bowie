@@ -397,7 +397,7 @@ bowie_error_t bowie_dht_make_query(
  *
  * The handler converts the closest nodes to the compact form
  * before writing them into the arena. The conversion is done
- * with the message layer's encoder.
+ * by the write_nodes_to_arena helper.
  */
 
 /*
@@ -469,8 +469,8 @@ static size_t write_nodes_to_arena(
  * The number written is the smaller of the input count and
  * the arena's capacity. The count is returned.
  *
- * The metadata is not copied. A caller that wants the
- * metadata reads it from the storage directly.
+ * Only the address is copied; the arena stores compact
+ * peers.
  */
 
 static size_t write_peers_to_arena(
@@ -489,10 +489,6 @@ static size_t write_peers_to_arena(
     }
 
     for (size_t i = 0u; i < n; i++) {
-        /*
-         * The arena stores compact peers. The full entry
-         * has more fields; only the address is used.
-         */
         arena->peers[i].addr = peers[i].addr;
     }
     arena->peers_used = n;
@@ -582,6 +578,11 @@ static bowie_error_t handle_find_node(
  * A get_peers query is answered with the peers for the info
  * hash, or with the closest nodes when there are no peers.
  * The response includes a token.
+ *
+ * When there are no peers, the target for the node lookup is
+ * the info hash itself, reinterpreted as a node ID. The two
+ * are the same size (160 bits), so the reinterpretation is a
+ * copy.
  */
 
 static bowie_error_t handle_get_peers(
@@ -624,13 +625,17 @@ static bowie_error_t handle_get_peers(
      * not, the response carries the closest nodes.
      */
     size_t nodes_written = 0u;
-    bowie_dht_node_t nodes[BOWIE_DHT_K];
 
     if (peer_count == 0u) {
+        bowie_dht_node_id_t target;
+        memcpy(target.bytes, query->info_hash.bytes,
+               BOWIE_DHT_INFO_HASH_LEN);
+
+        bowie_dht_node_t nodes[BOWIE_DHT_K];
         size_t count = 0u;
         rc = bowie_dht_routing_select_closest(
-            &dht->routing, &query->info_hash_to_node_id,
-            now_ms, nodes, BOWIE_DHT_K, &count);
+            &dht->routing, &target, now_ms,
+            nodes, BOWIE_DHT_K, &count);
         if (rc == BOWIE_OK) {
             nodes_written = write_nodes_to_arena(nodes, count,
                                                   arena);
