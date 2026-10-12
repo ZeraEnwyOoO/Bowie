@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -60,7 +60,7 @@
 #define TEST_CAND_CAP   8
 #define TEST_PEER_CAP   8
 
-static bowie_dht_node_t      g_candidates[TEST_CAND_CAP];
+static bowie_dht_node_t       g_candidates[TEST_CAND_CAP];
 static bowie_dht_peer_entry_t g_peers[TEST_PEER_CAP];
 
 static void make_target(bowie_dht_node_id_t *id)
@@ -76,17 +76,6 @@ static void make_node(bowie_dht_node_t *n, uint8_t seed)
     n->addr.addr[0] = 10u;
     n->addr.addr[3] = seed;
     n->addr.port = (uint16_t)(6881u + seed);
-}
-
-static void make_node_full(bowie_dht_node_t *n, uint8_t first_byte,
-                           uint8_t last_octet)
-{
-    memset(n, 0, sizeof(*n));
-    n->id.bytes[0] = first_byte;
-    n->addr.family = BOWIE_AF_INET;
-    n->addr.addr[0] = 10u;
-    n->addr.addr[3] = last_octet;
-    n->addr.port = 6881u;
 }
 
 static bowie_dht_search_t make_search(
@@ -170,7 +159,6 @@ START_TEST(test_init_get_peers_requires_peer_array)
     bowie_dht_search_t s;
     memset(&s, 0, sizeof(s));
 
-    /* No peers array. */
     ck_assert_int_eq(
         bowie_dht_search_init(&s, BOWIE_DHT_SEARCH_GET_PEERS,
                               &target, &hash,
@@ -293,11 +281,6 @@ END_TEST
 
 START_TEST(test_seed_sorted_by_distance)
 {
-    /*
-     * Target is all-zero. Nodes 0x10, 0x00, 0x20.
-     * Distances: 0x10, 0x00, 0x20.
-     * Sorted (closest first): 0x00, 0x10, 0x20.
-     */
     bowie_dht_search_t s = make_search_node_only(3u, 20u);
 
     bowie_dht_node_t n1;
@@ -418,12 +401,10 @@ START_TEST(test_next_query_closest_first)
 
     bowie_dht_node_t out;
 
-    /* First query: the closest (0x00). */
     ck_assert_int_eq(bowie_dht_search_next_query(&s, &out),
                      BOWIE_OK);
     ck_assert_uint_eq(out.id.bytes[0], 0x00u);
 
-    /* Second query: the next (0x20). */
     ck_assert_int_eq(bowie_dht_search_next_query(&s, &out),
                      BOWIE_OK);
     ck_assert_uint_eq(out.id.bytes[0], 0x20u);
@@ -432,7 +413,6 @@ END_TEST
 
 START_TEST(test_next_query_in_flight_limit)
 {
-    /* alpha = 1, so one in-flight at a time. */
     bowie_dht_search_t s = make_search_node_only(1u, 20u);
 
     bowie_dht_node_t n1;
@@ -446,7 +426,6 @@ START_TEST(test_next_query_in_flight_limit)
 
     ck_assert_int_eq(bowie_dht_search_next_query(&s, &out),
                      BOWIE_OK);
-    /* Second query blocked by in-flight limit. */
     ck_assert_int_eq(bowie_dht_search_next_query(&s, &out),
                      BOWIE_ERR_BUSY);
 }
@@ -465,7 +444,6 @@ START_TEST(test_next_query_max_queries)
     bowie_dht_node_t out;
     ck_assert_int_eq(bowie_dht_search_next_query(&s, &out),
                      BOWIE_OK);
-    /* Max queries reached. */
     ck_assert_int_eq(bowie_dht_search_next_query(&s, &out),
                      BOWIE_ERR_NOT_FOUND);
 }
@@ -510,7 +488,6 @@ END_TEST
 
 START_TEST(test_add_response_null)
 {
-    bowie_dht_search_t s = make_search_node_only(3u, 20u);
     ck_assert_int_eq(bowie_dht_search_add_response(NULL, NULL, 0u),
                      BOWIE_ERR_NULL_ARG);
 }
@@ -543,7 +520,6 @@ START_TEST(test_add_response_adds_candidates)
     bowie_dht_node_t out;
     (void)bowie_dht_search_next_query(&s, &out);
 
-    /* One compact node in the response. */
     bowie_dht_compact_node_t cn;
     memset(&cn, 0, sizeof(cn));
     cn.id.bytes[0] = 0x42u;
@@ -566,8 +542,6 @@ END_TEST
 
 START_TEST(test_add_peers_null)
 {
-    bowie_dht_search_t s = make_search(BOWIE_DHT_SEARCH_GET_PEERS,
-                                        3u, 20u, 30000u);
     ck_assert_int_eq(bowie_dht_search_add_peers(NULL, NULL, 0u),
                      BOWIE_ERR_NULL_ARG);
 }
@@ -638,10 +612,6 @@ END_TEST
 
 START_TEST(test_is_done_fresh_search)
 {
-    /*
-     * A search with no candidates and no queries is done:
-     * there is nothing to query.
-     */
     bowie_dht_search_t s = make_search_node_only(3u, 20u);
     ck_assert(bowie_dht_search_is_done(&s));
 }
@@ -654,7 +624,6 @@ START_TEST(test_is_done_pending_candidate)
     make_node(&n, 1u);
     (void)bowie_dht_search_seed(&s, &n);
 
-    /* There is an unqueried candidate. */
     ck_assert(!bowie_dht_search_is_done(&s));
 }
 END_TEST
@@ -669,12 +638,10 @@ START_TEST(test_is_done_after_all_queried)
     bowie_dht_node_t out;
     (void)bowie_dht_search_next_query(&s, &out);
 
-    /* One query in flight. */
     ck_assert(!bowie_dht_search_is_done(&s));
 
     (void)bowie_dht_search_query_done(&s);
 
-    /* No in-flight, all queried. */
     ck_assert(bowie_dht_search_is_done(&s));
 }
 END_TEST
