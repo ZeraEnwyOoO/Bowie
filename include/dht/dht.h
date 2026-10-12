@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -108,6 +108,13 @@
  *
  * A message that is malformed or that has an unknown type is
  * ignored. The caller does not send a response.
+ *
+ * The response's node and peer arrays are caller-supplied.
+ * The caller passes a message arena to the handler; the
+ * handler writes the response's nodes and peers into the
+ * arena. The arena is the same type that the message layer
+ * uses. The caller owns the arena and keeps it alive for as
+ * long as the response is used.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -238,9 +245,8 @@ void bowie_dht_shutdown(bowie_dht_t *dht);
 /*
  * Reset the engine's state without changing the config.
  *
- * The routing table, the storage, the token state, and the
- * security state are cleared. The config and the local ID
- * are kept.
+ * The routing table, the storage, and the security rate
+ * table are cleared. The config and the local ID are kept.
  *
  * Passing NULL is a no-op.
  */
@@ -265,13 +271,19 @@ void bowie_dht_clear(bowie_dht_t *dht);
  * For a find_node query, the target is required and the
  * info_hash is ignored. For a get_peers query, the
  * info_hash is required and the target is ignored. For a
- * ping query, both are ignored.
+ * ping query, both are ignored. For an announce_peer query,
+ * the info_hash is required and the caller fills the port
+ * and the token in the returned message.
  *
  * Returns BOWIE_OK on success.
  * Returns BOWIE_ERR_NULL_ARG if dht or out is NULL, or if
  *   a required field for the query type is NULL.
  * Returns BOWIE_ERR_INVAL if the engine is not initialized,
  *   or if the query type is unknown.
+ * Returns BOWIE_ERR_TOO_LARGE if the transaction id is
+ *   longer than BOWIE_DHT_MSG_TID_MAX.
+ * Returns a CRYPTO-class error if a random transaction id
+ *   cannot be generated.
  */
 bowie_error_t bowie_dht_make_query(
     bowie_dht_t                 *dht,
@@ -292,7 +304,12 @@ bowie_error_t bowie_dht_make_query(
  * Handle an incoming message.
  *
  * The message has already been parsed by the message layer.
- * The sender's address is given.
+ * The sender's address is given. The current time is given
+ * for the rate-limit check and the routing timestamps.
+ *
+ * The arena holds the arrays that the handler writes for a
+ * response. The arena is the same type that the message
+ * layer uses. The caller owns the arena.
  *
  * For a QUERY message:
  *
@@ -312,6 +329,8 @@ bowie_error_t bowie_dht_make_query(
  *
  *   - The routing table is updated with the sender's node
  *     ID and address.
+ *   - The response's token, if any, is stored for the
+ *     sender.
  *   - The response is not answered. The caller reads the
  *     response's nodes and peers and updates its search.
  *
@@ -334,6 +353,8 @@ bowie_error_t bowie_dht_handle_message(
     bowie_dht_t                *dht,
     const bowie_dht_message_t  *msg,
     const bowie_addr_t         *from,
+    bowie_mtime_t               now_ms,
+    bowie_dht_message_arena_t  *arena,
     bowie_dht_message_t        *out_response,
     int                        *out_has_response);
 
@@ -353,12 +374,18 @@ bowie_error_t bowie_dht_handle_message(
  *   - builds a refresh query when the refresh interval has
  *     elapsed
  *
- * The refresh query is a find_node query for a random ID.
- * The query is written through out_refresh when it is time
- * to refresh. The caller sends it.
+ * The refresh query is a find_node query for a random ID in
+ * the range of the stalest bucket. The query is written
+ * through out_refresh when it is time to refresh. The caller
+ * sends it.
  *
  * The out_has_refresh flag is set to 1 when a refresh query
  * was produced.
+ *
+ * Passing NULL for out_refresh or out_has_refresh means the
+ * caller does not want the refresh query; the refresh
+ * timestamp is still updated so that the next tick does not
+ * repeat the same interval.
  *
  * Returns BOWIE_OK on success.
  * Returns BOWIE_ERR_NULL_ARG if dht is NULL.
