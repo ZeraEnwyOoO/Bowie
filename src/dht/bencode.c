@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -81,6 +81,7 @@
  *   <stdint.h>                   int64_t, uint8_t
  *   <stddef.h>                   size_t
  *   <string.h>                   memcmp
+ *   <stdio.h>                    snprintf
  *   "bowie/types.h"              bowie_span_t
  *   "bowie/err.h"                error codes
  *   "dht/bencode.h"              the declarations
@@ -183,7 +184,9 @@ static int is_digit(uint8_t c)
  * is exactly "0". A negative zero is not allowed.
  *
  * In lenient mode, a leading zero and a negative zero are
- * accepted and the lenient flag is set.
+ * accepted and the lenient flag is set. When a leading zero
+ * is accepted, the digits that follow are read as usual; the
+ * leading zero is ignored.
  *
  * The value is accumulated in a signed 64-bit integer. An
  * overflow is reported as BOWIE_ERR_TOO_LARGE.
@@ -213,7 +216,9 @@ static bowie_error_t parse_integer(parser_t *p, int64_t *out)
         /*
          * A leading zero is allowed only if the value is
          * exactly "0". If the next byte is a digit, the
-         * value has a leading zero.
+         * value has a leading zero. In lenient mode the
+         * leading zero is accepted and the digits that
+         * follow are read as usual.
          */
         if (p->pos + 1u < p->len &&
             is_digit(p->buf[p->pos + 1u])) {
@@ -222,9 +227,21 @@ static bowie_error_t parse_integer(parser_t *p, int64_t *out)
             }
             lenient = 1;
         }
-        acc = 0u;
         digits = 1;
         p->pos++;
+
+        /*
+         * Read any further digits. The leading zero is
+         * ignored; the value is the digits that follow.
+         */
+        while (p->pos < p->len && is_digit(p->buf[p->pos])) {
+            uint8_t d = (uint8_t)(p->buf[p->pos] - (uint8_t)'0');
+            if (acc > (UINT64_MAX - (uint64_t)d) / 10u) {
+                return BOWIE_ERR_TOO_LARGE;
+            }
+            acc = acc * 10u + (uint64_t)d;
+            p->pos++;
+        }
     } else if (is_digit(p->buf[p->pos])) {
         while (p->pos < p->len && is_digit(p->buf[p->pos])) {
             uint8_t d = (uint8_t)(p->buf[p->pos] - (uint8_t)'0');
@@ -647,24 +664,8 @@ bowie_error_t bowie_bencode_decode(
 
 /*
  * ============================================================================
- * END OF FILE (PART 1 OF 3)
- * ============================================================================
- */
-/*
- * ============================================================================
  * PART 2 — VALUE ACCESS
  * ============================================================================
- *
- * Helpers to read a decoded value. A caller that expects a
- * particular kind uses the matching accessor. An accessor that
- * is given the wrong kind returns an error and does not write
- * through the out pointer.
- *
- * Every accessor checks its pointer arguments. A NULL pointer
- * is an argument error, not a crash.
- *
- * The list and dict accessors return borrowed views. The
- * caller reads the children with list_at or dict_at.
  */
 
 bowie_error_t bowie_bencode_get_int(
@@ -854,77 +855,7 @@ const bowie_bencode_value_t *bowie_bencode_dict_get(
 
 /*
  * ============================================================================
- * END OF PART 2 — VALUE ACCESS
- * ============================================================================
- */
-/*
- * ============================================================================
  * PART 3 — ENCODE
- * ============================================================================
- *
- * The encoder writes a value tree into a caller-supplied
- * buffer. The caller builds the tree by calling the writer
- * functions in order. The writer does not allocate.
- *
- * A list is written as:
- *
- *   bowie_bencode_begin_list(w);
- *   bowie_bencode_write_int(w, 1);
- *   bowie_bencode_write_str(w, span);
- *   bowie_bencode_end_list(w);
- *
- * A dictionary is written as:
- *
- *   bowie_bencode_begin_dict(w);
- *   bowie_bencode_write_dict_key(w, key1);
- *   bowie_bencode_write_int(w, value1);
- *   bowie_bencode_write_dict_key(w, key2);
- *   bowie_bencode_write_str(w, value2);
- *   bowie_bencode_end_dict(w);
- *
- * The caller is responsible for writing the dictionary keys
- * in sorted order. The writer does not sort them. A caller
- * that does not know the order can use a temporary array and
- * a sort routine from the standard library.
- *
- * ----------------------------------------------------------------------------
- * Design notes
- * ----------------------------------------------------------------------------
- *
- * The writer is a small struct: a buffer, a capacity, and a
- * position. Every write checks that the value fits before
- * writing. A write that does not fit is reported as
- * BOWIE_ERR_TOO_SMALL, and the position is not advanced.
- *
- * Integer encoding writes the decimal form of the value
- * followed by 'e'. The decimal form is produced by snprintf
- * into a small stack buffer. The buffer is large enough for
- * the longest possible int64_t value: 20 digits plus a sign
- * plus a NUL terminator.
- *
- * String encoding writes the length in decimal, then ':', then
- * the bytes. The length is produced by snprintf into a small
- * stack buffer.
- *
- * The begin/end functions write a single byte. They are
- * separate from the write functions so that a caller can
- * structure the code by nesting.
- *
- * The writer does not track nesting. A caller that calls
- * end_list without a matching begin_list produces a malformed
- * output. The writer does not detect this, because detecting
- * it would require a nesting stack and a policy for what to
- * do when the stack overflows. The DHT layer that builds the
- * messages knows the structure it is building and does not
- * need the check.
- *
- * ----------------------------------------------------------------------------
- * Dependencies
- * ----------------------------------------------------------------------------
- *
- *   <stdio.h>                    snprintf
- *   <string.h>                   memcpy
- *   "dht/bencode.h"              the declarations
  * ============================================================================
  */
 
@@ -1000,6 +931,11 @@ size_t bowie_bencode_writer_pos(const bowie_bencode_writer_t *w)
  * The decimal form is produced by snprintf into a 24-byte
  * stack buffer. The buffer is large enough for the longest
  * int64_t value: a sign, 19 digits, and a NUL terminator.
+ *
+ * The whole integer is three parts: the opener 'i', the
+ * decimal digits, and the terminator 'e'. The function checks
+ * that all three fit before writing any of them, so that a
+ * write that does not fit leaves the buffer unchanged.
  */
 
 bowie_error_t bowie_bencode_write_int(bowie_bencode_writer_t *w,
@@ -1014,6 +950,11 @@ bowie_error_t bowie_bencode_write_int(bowie_bencode_writer_t *w,
                       (long long)value);
     if (n < 0 || (size_t)n >= sizeof(tmp)) {
         return BOWIE_ERR_INTERNAL;
+    }
+
+    size_t total = (size_t)n + 2u;
+    if (total > w->cap - w->pos) {
+        return BOWIE_ERR_TOO_SMALL;
     }
 
     bowie_error_t rc = writer_write_byte(w, (uint8_t)'i');
