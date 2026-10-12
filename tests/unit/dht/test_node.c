@@ -1,4 +1,5 @@
-/*
+ 
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -63,13 +64,6 @@ static void make_id(bowie_dht_node_id_t *id, uint8_t seed)
 {
     for (size_t i = 0u; i < BOWIE_DHT_NODE_ID_LEN; i++) {
         id->bytes[i] = (uint8_t)(seed + i);
-    }
-}
-
-static void make_hash(bowie_dht_info_hash_t *h, uint8_t seed)
-{
-    for (size_t i = 0u; i < BOWIE_DHT_INFO_HASH_LEN; i++) {
-        h->bytes[i] = (uint8_t)(seed + i);
     }
 }
 
@@ -305,11 +299,6 @@ END_TEST
 
 START_TEST(test_distance_between_ids_xor)
 {
-    /*
-     * a = 0x00, 0x00, ..., 0x00
-     * b = 0xFF, 0xFF, ..., 0xFF
-     * The XOR is all ones.
-     */
     bowie_dht_node_id_t a;
     bowie_dht_node_id_t b;
     bowie_dht_distance_t d;
@@ -460,7 +449,6 @@ END_TEST
 
 START_TEST(test_distance_first_bit_bit0)
 {
-    /* 0x80 = 1000 0000. First set bit is position 0. */
     bowie_dht_distance_t d;
     memset(&d, 0, sizeof(d));
     d.bytes[0] = 0x80u;
@@ -470,7 +458,6 @@ END_TEST
 
 START_TEST(test_distance_first_bit_bit7)
 {
-    /* 0x01 = 0000 0001. First set bit is position 7. */
     bowie_dht_distance_t d;
     memset(&d, 0, sizeof(d));
     d.bytes[0] = 0x01u;
@@ -480,7 +467,6 @@ END_TEST
 
 START_TEST(test_distance_first_bit_byte1)
 {
-    /* First set bit in byte 1: position 8 + 0 = 8. */
     bowie_dht_distance_t d;
     memset(&d, 0, sizeof(d));
     d.bytes[1] = 0x80u;
@@ -490,7 +476,6 @@ END_TEST
 
 START_TEST(test_distance_first_bit_byte19)
 {
-    /* First set bit in byte 19: position 19 * 8 + 0 = 152. */
     bowie_dht_distance_t d;
     memset(&d, 0, sizeof(d));
     d.bytes[19] = 0x80u;
@@ -500,7 +485,6 @@ END_TEST
 
 START_TEST(test_distance_first_bit_middle_of_byte)
 {
-    /* 0x10 = 0001 0000. First set bit is position 3. */
     bowie_dht_distance_t d;
     memset(&d, 0, sizeof(d));
     d.bytes[0] = 0x10u;
@@ -562,7 +546,6 @@ START_TEST(test_is_fresh_clock_moved_backwards)
     bowie_dht_node_t n;
     memset(&n, 0, sizeof(n));
     n.last_seen_ms = 5000u;
-    /* now < last_seen. */
     ck_assert(bowie_dht_node_is_fresh(&n, 1000u));
 }
 END_TEST
@@ -636,10 +619,6 @@ END_TEST
 
 START_TEST(test_is_good_seen_but_stale_not_failed)
 {
-    /*
-     * Mainline: a node that has ever responded and has not
-     * failed three times is good, even if it is stale.
-     */
     bowie_dht_node_t n;
     memset(&n, 0, sizeof(n));
     n.last_seen_ms = 1000u;
@@ -806,8 +785,8 @@ START_TEST(test_from_compact_ok)
     buf[21] = 0u;
     buf[22] = 0u;
     buf[23] = 5u;
-    buf[24] = 0x1Au; /* 26 */
-    buf[25] = 0xE1u; /* 225 -> 0x1AE1 = 6881 */
+    buf[24] = 0x1Au;
+    buf[25] = 0xE1u;
 
     bowie_span_t in = { buf, 26u };
     bowie_dht_node_t n;
