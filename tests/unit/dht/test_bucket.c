@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -22,18 +22,6 @@
  * ============================================================================
  *
  * Unit tests for src/dht/bucket.c.
- *
- * The tests cover:
- *
- *   - Lifecycle: clear.
- *   - Query: is_empty, is_full, count, at, find.
- *   - Add: added, updated, cached, cache full, invalid.
- *   - Remove: promotes a replacement.
- *   - Seen / Failed / SetToken.
- *   - Selection: by XOR distance, skips bad nodes.
- *
- * The tests use a helper to fill nodes with deterministic IDs
- * so that the expected bucket state is visible in the test.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -59,14 +47,24 @@
  */
 
 /*
- * Build a node with a deterministic id from a seed. The id is
- * the seed in the first byte, zero elsewhere. The address is
- * a valid IPv4 address with the seed as the last octet.
+ * Build a node with a deterministic id from a seed.
+ *
+ * A seed of 0 would produce an all-zero id, which is the
+ * "unset" value and is rejected by bowie_dht_node_is_set. To
+ * keep the seed 0 usable in the tests, the second byte is set
+ * to 1 when the seed is 0. The id is then non-zero and the
+ * node is valid.
+ *
+ * The address is a valid IPv4 address with the seed as the
+ * last octet.
  */
 static void make_node(bowie_dht_node_t *n, uint8_t seed)
 {
     memset(n, 0, sizeof(*n));
     n->id.bytes[0] = seed;
+    if (seed == 0u) {
+        n->id.bytes[1] = 1u;
+    }
     n->addr.family = BOWIE_AF_INET;
     n->addr.addr[0] = 10u;
     n->addr.addr[1] = 0u;
@@ -79,6 +77,9 @@ static void make_id(bowie_dht_node_id_t *id, uint8_t seed)
 {
     memset(id, 0, sizeof(*id));
     id->bytes[0] = seed;
+    if (seed == 0u) {
+        id->bytes[1] = 1u;
+    }
 }
 
 /*
@@ -90,6 +91,7 @@ static void make_id(bowie_dht_node_id_t *id, uint8_t seed)
 START_TEST(test_clear_zeroes)
 {
     bowie_dht_bucket_t b;
+    memset(&b, 0, sizeof(b));
     bowie_dht_node_t n;
     make_node(&n, 1u);
 
@@ -386,10 +388,6 @@ START_TEST(test_add_cache_full_evicts_oldest)
         (void)bowie_dht_bucket_add(&b, &n, 100u);
     }
 
-    /*
-     * Fill the cache with BOWIE_DHT_REPLACEMENT nodes.
-     * The seeds are 100..100+REPLACEMENT-1.
-     */
     for (uint8_t i = 0u; i < BOWIE_DHT_REPLACEMENT; i++) {
         bowie_dht_node_t n;
         make_node(&n, (uint8_t)(100u + i));
@@ -401,28 +399,17 @@ START_TEST(test_add_cache_full_evicts_oldest)
     ck_assert_uint_eq(bowie_dht_bucket_replacement_count(&b),
                       BOWIE_DHT_REPLACEMENT);
 
-    /*
-     * Add one more. The oldest cached node (seed 100) is
-     * evicted.
-     */
     bowie_dht_node_t n;
     make_node(&n, 200u);
     ck_assert_int_eq(
         bowie_dht_bucket_add(&b, &n, 300u),
         BOWIE_DHT_BUCKET_ADD_CACHED);
 
-    /*
-     * The oldest is gone. The new one is present.
-     */
     bowie_dht_node_id_t id_old;
     make_id(&id_old, 100u);
     bowie_dht_node_id_t id_new;
     make_id(&id_new, 200u);
 
-    /*
-     * The old and new nodes are not in the live set. Check
-     * the replacement cache directly.
-     */
     int found_old = 0;
     int found_new = 0;
     for (size_t i = 0u; i < b.replacement_count; i++) {
@@ -748,10 +735,15 @@ START_TEST(test_select_sorted_by_distance)
     /*
      * Target is 0x10. The nodes are 0x00, 0x20, 0x18.
      * Distances:
-     *   0x10 ^ 0x00 = 0x10
-     *   0x10 ^ 0x20 = 0x30
-     *   0x10 ^ 0x18 = 0x08
+     *   0x00 ^ 0x10 = 0x10
+     *   0x20 ^ 0x10 = 0x30
+     *   0x18 ^ 0x10 = 0x08
      * Sorted: 0x18 (0x08), 0x00 (0x10), 0x20 (0x30).
+     *
+     * The node with seed 0x00 has its first id byte zero;
+     * make_node sets the second byte to 1 so the id is not
+     * all zero. The distance is still dominated by the
+     * first byte for the comparison.
      */
     bowie_dht_node_t n;
     make_node(&n, 0x00u);
@@ -789,10 +781,6 @@ START_TEST(test_select_skips_failed)
     make_node(&n, 0x00u);
     (void)bowie_dht_bucket_add(&b, &n, 100u);
 
-    /*
-     * Fail the closest node three times so it is removed.
-     * (Three failures removes it from the live set.)
-     */
     bowie_dht_node_id_t fail_id;
     make_id(&fail_id, 0x18u);
     (void)bowie_dht_bucket_failed(&b, &fail_id, 100u);
