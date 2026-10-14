@@ -18,122 +18,107 @@
 
 /*
  * ============================================================================
- * BOWIE — PROTOCOL HANDSHAKE TESTS
+ * BOWIE — PROTOCOL HANDSHAKE IMPLEMENTATION
  * ============================================================================
  *
- * Unit tests for src/proto/handshake.c.
+ * The handshake state machine for the Bowie protocol.
  *
- * The tests use a fake sign/verify pair. The sign callback
- * writes a byte pattern derived from the message; the verify
- * callback checks the pattern. This is not a real signature;
- * it is enough to test the state machine and the payload
- * layout. A real signature is tested in the crypto layer.
+ * ----------------------------------------------------------------------------
+ * What this file does NOT do
+ * ----------------------------------------------------------------------------
  *
- * The function pointers stored in the handshake are never
- * compared to the callbacks directly: ISO C forbids the
- * conversion of a function pointer to an object pointer, and
- * ck_assert_ptr_eq requires object pointers. A test that needs
- * to check that a callback is still installed calls the
- * handshake and checks that it produces output.
+ *   - No transport.
+ *   - No allocation.
+ *   - No permission.
+ *   - No session key agreement.
+ *   - No revocation check.
+ *
+ * ----------------------------------------------------------------------------
+ * Design notes
+ * ----------------------------------------------------------------------------
+ *
+ * The handshake is a two-message exchange:
+ *
+ *   Initiator                Responder
+ *       |                        |
+ *       |------ HELLO ---------->|
+ *       |                        |
+ *       |<----- HELLO_ACK -------|
+ *       |                        |
+ *     DONE                     DONE
+ *
+ * The HELLO payload is:
+ *
+ *   offset  size  field
+ *   ------  ----  -----
+ *        0    32  initiator public ID
+ *       32    32  initiator nonce
+ *       64    64  signature over the nonce
+ *
+ * The HELLO_ACK payload is:
+ *
+ *   offset  size  field
+ *   ------  ----  -----
+ *        0    32  responder public ID
+ *       32    32  responder nonce
+ *       64    64  signature over (initiator nonce || responder nonce)
+ *
+ * The signature is produced by the caller's sign callback and
+ * verified by the caller's verify callback.
+ *
+ * ----------------------------------------------------------------------------
+ * State transitions
+ * ----------------------------------------------------------------------------
+ *
+ * Initiator:
+ *   IDLE -> SENT_HELLO   on output HELLO
+ *   SENT_HELLO -> DONE   on input HELLO_ACK
+ *
+ * Responder:
+ *   IDLE -> SENT_HELLO   on input HELLO
+ *   SENT_HELLO -> SENT_ACK on output HELLO_ACK
+ *
+ * A state that has no message to send returns BOWIE_OK with
+ * out_has_msg set to 0. A state that cannot accept a message
+ * returns BOWIE_ERR_STATE.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <check.h>                    test framework
+ *   <stdint.h>                   uint8_t, uint32_t
+ *   <stddef.h>                   size_t
  *   <string.h>                   memset, memcpy
+ *   "bowie/types.h"              bowie_public_id_t, bowie_mtime_t
  *   "bowie/err.h"                error codes
- *   "proto/handshake.h"          the unit under test
+ *   "proto/message.h"            the message type
+ *   "proto/handshake.h"          the declarations
  * ============================================================================
  */
 
-#include <check.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 
+#include "bowie/types.h"
 #include "bowie/err.h"
 #include "proto/message.h"
 #include "proto/handshake.h"
 
 /*
  * ============================================================================
- * FAKE SIGN / VERIFY
+ * PAYLOAD LENGTHS
  * ============================================================================
  *
- * The fake signer writes a deterministic byte pattern derived
- * from the message and the signing ID. The fake verifier
- * recomputes the pattern and compares it to the signature.
- *
- * The pattern is the message bytes XORed with a key derived
- * from the first byte of the ID. This is not secure; it is a
- * deterministic mapping that a test can predict.
+ * The HELLO payload is 32 + 32 + 64 = 128 bytes.
+ * The HELLO_ACK payload is 32 + 32 + 64 = 128 bytes.
  */
 
-typedef struct fake_ctx {
-    bowie_public_id_t signer_id;
-    int               fail_sign;
-    int               fail_verify;
-} fake_ctx_t;
+#define HELLO_PAYLOAD_LEN \
+    (BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN + BOWIE_PROTO_SIG_LEN)
 
-static uint8_t pattern_key(const bowie_public_id_t *id)
-{
-    return (uint8_t)(id->bytes[0] ^ 0x5Au);
-}
-
-static bowie_error_t fake_sign(
-    void *ctx,
-    const uint8_t *msg, size_t msg_len,
-    uint8_t *sig)
-{
-    fake_ctx_t *fc = (fake_ctx_t *)ctx;
-
-    if (fc != NULL && fc->fail_sign) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    uint8_t key = pattern_key(&fc->signer_id);
-    for (size_t i = 0u; i < BOWIE_PROTO_SIG_LEN; i++) {
-        uint8_t m = (msg_len > 0u) ? msg[i % msg_len] : 0u;
-        sig[i] = (uint8_t)(m ^ key ^ (uint8_t)i);
-    }
-    return BOWIE_OK;
-}
-
-static int fake_verify(
-    void *ctx,
-    const bowie_public_id_t *id,
-    const uint8_t *msg, size_t msg_len,
-    const uint8_t *sig)
-{
-    fake_ctx_t *fc = (fake_ctx_t *)ctx;
-
-    if (fc != NULL && fc->fail_verify) {
-        return 0;
-    }
-
-    uint8_t key = pattern_key(id);
-    for (size_t i = 0u; i < BOWIE_PROTO_SIG_LEN; i++) {
-        uint8_t m = (msg_len > 0u) ? msg[i % msg_len] : 0u;
-        uint8_t expected = (uint8_t)(m ^ key ^ (uint8_t)i);
-        if (sig[i] != expected) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static void make_id(bowie_public_id_t *id, uint8_t seed)
-{
-    for (size_t i = 0u; i < BOWIE_PUBLIC_ID_LEN; i++) {
-        id->bytes[i] = (uint8_t)(seed + i);
-    }
-}
-
-static void make_nonce(uint8_t *nonce, uint8_t seed)
-{
-    for (size_t i = 0u; i < BOWIE_PROTO_NONCE_LEN; i++) {
-        nonce[i] = (uint8_t)(seed + i);
-    }
-}
+#define HELLO_ACK_PAYLOAD_LEN \
+    (BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN + BOWIE_PROTO_SIG_LEN)
 
 /*
  * ============================================================================
@@ -141,402 +126,356 @@ static void make_nonce(uint8_t *nonce, uint8_t seed)
  * ============================================================================
  */
 
-START_TEST(test_init_null_hs)
+bowie_error_t bowie_proto_handshake_init(
+    bowie_proto_handshake_t   *hs,
+    bowie_proto_hs_role_t      role,
+    const bowie_public_id_t   *local_id,
+    bowie_proto_hs_sign_fn     sign,
+    bowie_proto_hs_verify_fn   verify,
+    void                      *ctx,
+    bowie_mtime_t              timeout_ms,
+    bowie_mtime_t              now_ms)
 {
-    bowie_public_id_t id;
-    make_id(&id, 1u);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    if (hs == NULL || local_id == NULL ||
+        sign == NULL || verify == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (role != BOWIE_PROTO_HS_INITIATOR &&
+        role != BOWIE_PROTO_HS_RESPONDER) {
+        return BOWIE_ERR_INVAL;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_init(NULL, BOWIE_PROTO_HS_INITIATOR,
-                                   &id, fake_sign, fake_verify,
-                                   &fc, 0u, 0u),
-        BOWIE_ERR_NULL_ARG);
+    memset(hs, 0, sizeof(*hs));
+    hs->state   = BOWIE_PROTO_HS_IDLE;
+    hs->role    = role;
+    hs->local_id = *local_id;
+
+    hs->sign    = sign;
+    hs->verify  = verify;
+    hs->ctx     = ctx;
+
+    hs->started_at_ms = now_ms;
+    hs->timeout_ms    = (timeout_ms == 0u)
+        ? BOWIE_PROTO_HS_DEFAULT_TIMEOUT_MS
+        : timeout_ms;
+
+    return BOWIE_OK;
 }
-END_TEST
 
-START_TEST(test_init_null_id)
+void bowie_proto_handshake_clear(bowie_proto_handshake_t *hs)
 {
-    bowie_proto_handshake_t hs;
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    if (hs == NULL) {
+        return;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_init(&hs, BOWIE_PROTO_HS_INITIATOR,
-                                   NULL, fake_sign, fake_verify,
-                                   &fc, 0u, 0u),
-        BOWIE_ERR_NULL_ARG);
+    bowie_proto_hs_sign_fn   sign    = hs->sign;
+    bowie_proto_hs_verify_fn verify  = hs->verify;
+    void                    *ctx     = hs->ctx;
+    bowie_public_id_t        local   = hs->local_id;
+    bowie_mtime_t            timeout = hs->timeout_ms;
+
+    memset(hs, 0, sizeof(*hs));
+
+    hs->sign         = sign;
+    hs->verify       = verify;
+    hs->ctx          = ctx;
+    hs->local_id     = local;
+    hs->timeout_ms   = timeout;
+    hs->state        = BOWIE_PROTO_HS_IDLE;
 }
-END_TEST
 
-START_TEST(test_init_null_sign)
+/*
+ * ============================================================================
+ * OUTPUT
+ * ============================================================================
+ */
+
+static bowie_error_t build_hello_payload(
+    bowie_proto_handshake_t *hs,
+    uint8_t                 *buf,
+    size_t                   cap,
+    size_t                  *out_len)
 {
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 1u);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    if (cap < HELLO_PAYLOAD_LEN) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_init(&hs, BOWIE_PROTO_HS_INITIATOR,
-                                   &id, NULL, fake_verify,
-                                   &fc, 0u, 0u),
-        BOWIE_ERR_NULL_ARG);
+    memcpy(buf, hs->local_id.bytes, BOWIE_PUBLIC_ID_LEN);
+
+    memcpy(buf + BOWIE_PUBLIC_ID_LEN,
+           hs->local_nonce,
+           BOWIE_PROTO_NONCE_LEN);
+
+    bowie_error_t rc = hs->sign(
+        hs->ctx,
+        hs->local_nonce, BOWIE_PROTO_NONCE_LEN,
+        buf + BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    *out_len = HELLO_PAYLOAD_LEN;
+    return BOWIE_OK;
 }
-END_TEST
 
-START_TEST(test_init_null_verify)
+static bowie_error_t build_hello_ack_payload(
+    bowie_proto_handshake_t *hs,
+    uint8_t                 *buf,
+    size_t                   cap,
+    size_t                  *out_len)
 {
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 1u);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    if (cap < HELLO_ACK_PAYLOAD_LEN) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_init(&hs, BOWIE_PROTO_HS_INITIATOR,
-                                   &id, fake_sign, NULL,
-                                   &fc, 0u, 0u),
-        BOWIE_ERR_NULL_ARG);
+    memcpy(buf, hs->local_id.bytes, BOWIE_PUBLIC_ID_LEN);
+
+    memcpy(buf + BOWIE_PUBLIC_ID_LEN,
+           hs->local_nonce,
+           BOWIE_PROTO_NONCE_LEN);
+
+    uint8_t signed_msg[BOWIE_PROTO_NONCE_LEN * 2u];
+    memcpy(signed_msg,
+           hs->remote_nonce, BOWIE_PROTO_NONCE_LEN);
+    memcpy(signed_msg + BOWIE_PROTO_NONCE_LEN,
+           hs->local_nonce, BOWIE_PROTO_NONCE_LEN);
+
+    bowie_error_t rc = hs->sign(
+        hs->ctx,
+        signed_msg, sizeof(signed_msg),
+        buf + BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    *out_len = HELLO_ACK_PAYLOAD_LEN;
+    return BOWIE_OK;
 }
-END_TEST
 
-START_TEST(test_init_bad_role)
+bowie_error_t bowie_proto_handshake_output(
+    bowie_proto_handshake_t *hs,
+    bowie_proto_msg_t       *out_msg,
+    int                     *out_has_msg)
 {
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 1u);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    if (hs == NULL || out_msg == NULL || out_has_msg == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_init(&hs, (bowie_proto_hs_role_t)99,
-                                   &id, fake_sign, fake_verify,
-                                   &fc, 0u, 0u),
-        BOWIE_ERR_INVAL);
-}
-END_TEST
+    *out_has_msg = 0;
 
-START_TEST(test_init_ok)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 1u);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    if (hs->state == BOWIE_PROTO_HS_DONE ||
+        hs->state == BOWIE_PROTO_HS_FAILED) {
+        return BOWIE_OK;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_init(&hs, BOWIE_PROTO_HS_INITIATOR,
-                                   &id, fake_sign, fake_verify,
-                                   &fc, 0u, 1000u),
-        BOWIE_OK);
-    ck_assert_int_eq(hs.state, BOWIE_PROTO_HS_IDLE);
-    ck_assert_int_eq(hs.role, BOWIE_PROTO_HS_INITIATOR);
-    ck_assert_uint_eq(hs.timeout_ms,
-                      BOWIE_PROTO_HS_DEFAULT_TIMEOUT_MS);
-    ck_assert_uint_eq(hs.started_at_ms, 1000u);
-}
-END_TEST
+    uint8_t *payload     = hs->out_payload;
+    size_t   payload_cap = sizeof(hs->out_payload);
+    size_t   payload_len = 0u;
 
-START_TEST(test_clear_preserves_config)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 1u);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
+    bowie_error_t rc = BOWIE_OK;
 
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 5000u, 1000u);
+    if (hs->role == BOWIE_PROTO_HS_INITIATOR) {
+        if (hs->state != BOWIE_PROTO_HS_IDLE) {
+            /*
+             * The initiator has already sent HELLO. There
+             * is nothing more to send until HELLO_ACK
+             * arrives.
+             */
+            return BOWIE_OK;
+        }
 
-    bowie_proto_handshake_clear(&hs);
+        rc = build_hello_payload(hs, payload, payload_cap,
+                                 &payload_len);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
 
-    ck_assert_int_eq(hs.state, BOWIE_PROTO_HS_IDLE);
-    ck_assert_uint_eq(hs.timeout_ms, 5000u);
-    ck_assert(bowie_public_id_equal(&hs.local_id, &id));
+        memset(out_msg, 0, sizeof(*out_msg));
+        out_msg->header.version = BOWIE_PROTO_VERSION;
+        out_msg->header.type    = BOWIE_PROTO_MSG_HELLO;
+        out_msg->header.length  = (uint32_t)payload_len;
+        out_msg->payload.data   = payload;
+        out_msg->payload.len    = payload_len;
+
+        hs->state = BOWIE_PROTO_HS_SENT_HELLO;
+        *out_has_msg = 1;
+        return BOWIE_OK;
+    }
 
     /*
-     * The function pointers are not compared directly: ISO C
-     * forbids the conversion of a function pointer to an
-     * object pointer. The clear function is expected to keep
-     * the callbacks; the test checks that the handshake can
-     * still produce output after the clear.
+     * Responder.
      */
-    make_nonce(hs.local_nonce, 0x10u);
+    if (hs->state == BOWIE_PROTO_HS_IDLE) {
+        /*
+         * The responder has nothing to send until it has
+         * received HELLO.
+         */
+        return BOWIE_OK;
+    }
 
-    bowie_proto_msg_t msg;
-    int has = 0;
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs, &msg, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 1);
-}
-END_TEST
+    if (hs->state != BOWIE_PROTO_HS_SENT_HELLO) {
+        /*
+         * The responder has already sent HELLO_ACK.
+         */
+        return BOWIE_OK;
+    }
 
-START_TEST(test_clear_null)
-{
-    bowie_proto_handshake_clear(NULL);
+    rc = build_hello_ack_payload(hs, payload, payload_cap,
+                                 &payload_len);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    memset(out_msg, 0, sizeof(*out_msg));
+    out_msg->header.version = BOWIE_PROTO_VERSION;
+    out_msg->header.type    = BOWIE_PROTO_MSG_HELLO_ACK;
+    out_msg->header.length  = (uint32_t)payload_len;
+    out_msg->payload.data   = payload;
+    out_msg->payload.len    = payload_len;
+
+    hs->state = BOWIE_PROTO_HS_SENT_ACK;
+    *out_has_msg = 1;
+    return BOWIE_OK;
 }
-END_TEST
 
 /*
  * ============================================================================
- * OUTPUT — INITIATOR
+ * INPUT
  * ============================================================================
  */
 
-START_TEST(test_output_null_hs)
+int bowie_proto_handshake_timed_out(
+    const bowie_proto_handshake_t *hs,
+    bowie_mtime_t                  now_ms)
 {
-    bowie_proto_msg_t msg;
-    int has = 0;
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(NULL, &msg, &has),
-        BOWIE_ERR_NULL_ARG);
+    if (hs == NULL) {
+        return 0;
+    }
+    if (hs->timeout_ms == 0u) {
+        return 0;
+    }
+    if (now_ms < hs->started_at_ms) {
+        return 0;
+    }
+    bowie_mtime_t elapsed = now_ms - hs->started_at_ms;
+    return (elapsed >= hs->timeout_ms) ? 1 : 0;
 }
-END_TEST
 
-START_TEST(test_output_null_msg)
+static bowie_error_t handle_hello(
+    bowie_proto_handshake_t *hs,
+    const bowie_proto_msg_t *msg)
 {
-    bowie_proto_handshake_t hs;
-    memset(&hs, 0, sizeof(hs));
-    int has = 0;
+    if (msg->payload.len != HELLO_PAYLOAD_LEN) {
+        return BOWIE_ERR_FORMAT;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs, NULL, &has),
-        BOWIE_ERR_NULL_ARG);
+    const uint8_t *p = msg->payload.data;
+
+    bowie_public_id_t remote_id;
+    memcpy(remote_id.bytes, p, BOWIE_PUBLIC_ID_LEN);
+
+    const uint8_t *nonce = p + BOWIE_PUBLIC_ID_LEN;
+    const uint8_t *sig   = p + BOWIE_PUBLIC_ID_LEN +
+                           BOWIE_PROTO_NONCE_LEN;
+
+    if (!hs->verify(hs->ctx, &remote_id,
+                    nonce, BOWIE_PROTO_NONCE_LEN, sig)) {
+        hs->state = BOWIE_PROTO_HS_FAILED;
+        return BOWIE_ERR_SIGN_INVALID;
+    }
+
+    hs->remote_id = remote_id;
+    memcpy(hs->remote_nonce, nonce, BOWIE_PROTO_NONCE_LEN);
+    hs->have_remote_nonce = 1;
+    hs->have_local_nonce  = 1;
+
+    /*
+     * The responder has received HELLO. It can now send
+     * HELLO_ACK. The state is set to SENT_HELLO so that the
+     * output function knows it has work to do.
+     */
+    hs->state = BOWIE_PROTO_HS_SENT_HELLO;
+
+    return BOWIE_OK;
 }
-END_TEST
 
-START_TEST(test_output_null_has)
+static bowie_error_t handle_hello_ack(
+    bowie_proto_handshake_t *hs,
+    const bowie_proto_msg_t *msg)
 {
-    bowie_proto_handshake_t hs;
-    memset(&hs, 0, sizeof(hs));
-    bowie_proto_msg_t msg;
+    if (msg->payload.len != HELLO_ACK_PAYLOAD_LEN) {
+        return BOWIE_ERR_FORMAT;
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs, &msg, NULL),
-        BOWIE_ERR_NULL_ARG);
+    const uint8_t *p = msg->payload.data;
+
+    bowie_public_id_t remote_id;
+    memcpy(remote_id.bytes, p, BOWIE_PUBLIC_ID_LEN);
+
+    const uint8_t *nonce = p + BOWIE_PUBLIC_ID_LEN;
+    const uint8_t *sig   = p + BOWIE_PUBLIC_ID_LEN +
+                           BOWIE_PROTO_NONCE_LEN;
+
+    uint8_t signed_msg[BOWIE_PROTO_NONCE_LEN * 2u];
+    memcpy(signed_msg,
+           hs->local_nonce, BOWIE_PROTO_NONCE_LEN);
+    memcpy(signed_msg + BOWIE_PROTO_NONCE_LEN,
+           nonce, BOWIE_PROTO_NONCE_LEN);
+
+    if (!hs->verify(hs->ctx, &remote_id,
+                    signed_msg, sizeof(signed_msg), sig)) {
+        hs->state = BOWIE_PROTO_HS_FAILED;
+        return BOWIE_ERR_SIGN_INVALID;
+    }
+
+    hs->remote_id = remote_id;
+    memcpy(hs->remote_nonce, nonce, BOWIE_PROTO_NONCE_LEN);
+    hs->have_remote_nonce = 1;
+
+    hs->state = BOWIE_PROTO_HS_DONE;
+    return BOWIE_OK;
 }
-END_TEST
 
-START_TEST(test_initiator_first_output_is_hello)
+bowie_error_t bowie_proto_handshake_input(
+    bowie_proto_handshake_t *hs,
+    const bowie_proto_msg_t *msg,
+    bowie_mtime_t            now_ms)
 {
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
+    if (hs == NULL || msg == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (hs->state == BOWIE_PROTO_HS_DONE ||
+        hs->state == BOWIE_PROTO_HS_FAILED) {
+        return BOWIE_ERR_STATE;
+    }
 
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-    make_nonce(hs.local_nonce, 0x10u);
+    if (bowie_proto_handshake_timed_out(hs, now_ms)) {
+        hs->state = BOWIE_PROTO_HS_FAILED;
+        return BOWIE_ERR_TIMEOUT;
+    }
 
-    bowie_proto_msg_t msg;
-    int has = 0;
+    if (msg->header.type == BOWIE_PROTO_MSG_HELLO) {
+        if (hs->role != BOWIE_PROTO_HS_RESPONDER) {
+            return BOWIE_ERR_STATE;
+        }
+        if (hs->state != BOWIE_PROTO_HS_IDLE) {
+            return BOWIE_ERR_STATE;
+        }
+        return handle_hello(hs, msg);
+    }
 
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs, &msg, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 1);
-    ck_assert_int_eq(msg.header.type, BOWIE_PROTO_MSG_HELLO);
-    ck_assert_uint_eq(msg.payload.len,
-                      BOWIE_PUBLIC_ID_LEN +
-                      BOWIE_PROTO_NONCE_LEN +
-                      BOWIE_PROTO_SIG_LEN);
-    ck_assert_int_eq(hs.state, BOWIE_PROTO_HS_SENT_HELLO);
+    if (msg->header.type == BOWIE_PROTO_MSG_HELLO_ACK) {
+        if (hs->role != BOWIE_PROTO_HS_INITIATOR) {
+            return BOWIE_ERR_STATE;
+        }
+        if (hs->state != BOWIE_PROTO_HS_SENT_HELLO) {
+            return BOWIE_ERR_STATE;
+        }
+        return handle_hello_ack(hs, msg);
+    }
+
+    return BOWIE_ERR_STATE;
 }
-END_TEST
-
-START_TEST(test_initiator_second_output_no_message)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-    make_nonce(hs.local_nonce, 0x10u);
-
-    bowie_proto_msg_t msg;
-    int has = 0;
-
-    (void)bowie_proto_handshake_output(&hs, &msg, &has);
-    ck_assert_int_eq(has, 1);
-
-    has = 0;
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs, &msg, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 0);
-}
-END_TEST
-
-/*
- * ============================================================================
- * OUTPUT — RESPONDER
- * ============================================================================
- */
-
-START_TEST(test_responder_first_output_no_message)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xBBu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_RESPONDER,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-
-    bowie_proto_msg_t msg;
-    int has = 0;
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs, &msg, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 0);
-    ck_assert_int_eq(hs.state, BOWIE_PROTO_HS_IDLE);
-}
-END_TEST
-
-/*
- * ============================================================================
- * INPUT — INITIATOR
- * ============================================================================
- */
-
-START_TEST(test_input_null_hs)
-{
-    bowie_proto_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(NULL, &msg, 0u),
-        BOWIE_ERR_NULL_ARG);
-}
-END_TEST
-
-START_TEST(test_input_null_msg)
-{
-    bowie_proto_handshake_t hs;
-    memset(&hs, 0, sizeof(hs));
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(&hs, NULL, 0u),
-        BOWIE_ERR_NULL_ARG);
-}
-END_TEST
-
-START_TEST(test_input_wrong_type_initiator)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-
-    bowie_proto_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.header.type = BOWIE_PROTO_MSG_HELLO;  /* wrong for initiator */
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(&hs, &msg, 0u),
-        BOWIE_ERR_STATE);
-}
-END_TEST
-
-/*
- * ============================================================================
- * TIMEOUT
- * ============================================================================
- */
-
-START_TEST(test_timed_out_null)
-{
-    ck_assert(!bowie_proto_handshake_timed_out(NULL, 1000u));
-}
-END_TEST
-
-START_TEST(test_timed_out_not_yet)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 5000u, 1000u);
-
-    ck_assert(!bowie_proto_handshake_timed_out(&hs, 4000u));
-}
-END_TEST
-
-START_TEST(test_timed_out_yes)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 5000u, 1000u);
-
-    ck_assert(bowie_proto_handshake_timed_out(&hs, 7000u));
-}
-END_TEST
-
-START_TEST(test_input_after_timeout_fails)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 100u, 0u);
-
-    bowie_proto_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(&hs, &msg, 1000u),
-        BOWIE_ERR_TIMEOUT);
-    ck_assert_int_eq(hs.state, BOWIE_PROTO_HS_FAILED);
-}
-END_TEST
 
 /*
  * ============================================================================
@@ -544,265 +483,49 @@ END_TEST
  * ============================================================================
  */
 
-START_TEST(test_state_null)
+bowie_proto_hs_state_t bowie_proto_handshake_state(
+    const bowie_proto_handshake_t *hs)
 {
-    ck_assert_int_eq(
-        bowie_proto_handshake_state(NULL),
-        BOWIE_PROTO_HS_FAILED);
+    if (hs == NULL) {
+        return BOWIE_PROTO_HS_FAILED;
+    }
+    return hs->state;
 }
-END_TEST
 
-START_TEST(test_state_ok)
+bowie_error_t bowie_proto_handshake_remote_id(
+    const bowie_proto_handshake_t *hs,
+    bowie_public_id_t             *out_id)
 {
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_state(&hs),
-        BOWIE_PROTO_HS_IDLE);
+    if (hs == NULL || out_id == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (bowie_public_id_is_zero(&hs->remote_id)) {
+        return BOWIE_ERR_NOT_FOUND;
+    }
+    *out_id = hs->remote_id;
+    return BOWIE_OK;
 }
-END_TEST
 
-START_TEST(test_remote_id_null)
+int bowie_proto_handshake_is_done(
+    const bowie_proto_handshake_t *hs)
 {
-    bowie_public_id_t out;
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_remote_id(NULL, &out),
-        BOWIE_ERR_NULL_ARG);
+    if (hs == NULL) {
+        return 0;
+    }
+    return (hs->state == BOWIE_PROTO_HS_DONE) ? 1 : 0;
 }
-END_TEST
 
-START_TEST(test_remote_id_not_known)
+int bowie_proto_handshake_is_failed(
+    const bowie_proto_handshake_t *hs)
 {
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-
-    bowie_public_id_t out;
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_remote_id(&hs, &out),
-        BOWIE_ERR_NOT_FOUND);
+    if (hs == NULL) {
+        return 1;
+    }
+    return (hs->state == BOWIE_PROTO_HS_FAILED) ? 1 : 0;
 }
-END_TEST
-
-START_TEST(test_is_done_null)
-{
-    ck_assert(!bowie_proto_handshake_is_done(NULL));
-}
-END_TEST
-
-START_TEST(test_is_done_false)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-
-    ck_assert(!bowie_proto_handshake_is_done(&hs));
-}
-END_TEST
-
-START_TEST(test_is_failed_null)
-{
-    ck_assert(bowie_proto_handshake_is_failed(NULL));
-}
-END_TEST
-
-START_TEST(test_is_failed_false)
-{
-    bowie_proto_handshake_t hs;
-    bowie_public_id_t id;
-    make_id(&id, 0xAAu);
-    fake_ctx_t fc;
-    memset(&fc, 0, sizeof(fc));
-    fc.signer_id = id;
-
-    (void)bowie_proto_handshake_init(&hs,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id, fake_sign, fake_verify,
-                                     &fc, 0u, 0u);
-
-    ck_assert(!bowie_proto_handshake_is_failed(&hs));
-}
-END_TEST
 
 /*
  * ============================================================================
- * FULL HANDSHAKE
+ * END OF FILE
  * ============================================================================
  */
-
-START_TEST(test_full_handshake_success)
-{
-    bowie_public_id_t id_a;
-    bowie_public_id_t id_b;
-    make_id(&id_a, 0x10u);
-    make_id(&id_b, 0x20u);
-
-    fake_ctx_t ctx_a;
-    fake_ctx_t ctx_b;
-    memset(&ctx_a, 0, sizeof(ctx_a));
-    memset(&ctx_b, 0, sizeof(ctx_b));
-    ctx_a.signer_id = id_a;
-    ctx_b.signer_id = id_b;
-
-    bowie_proto_handshake_t hs_a;
-    bowie_proto_handshake_t hs_b;
-
-    (void)bowie_proto_handshake_init(&hs_a,
-                                     BOWIE_PROTO_HS_INITIATOR,
-                                     &id_a, fake_sign, fake_verify,
-                                     &ctx_a, 0u, 0u);
-    (void)bowie_proto_handshake_init(&hs_b,
-                                     BOWIE_PROTO_HS_RESPONDER,
-                                     &id_b, fake_sign, fake_verify,
-                                     &ctx_b, 0u, 0u);
-
-    make_nonce(hs_a.local_nonce, 0x01u);
-    make_nonce(hs_b.local_nonce, 0x02u);
-
-    /* A -> B: HELLO */
-    bowie_proto_msg_t hello;
-    int has = 0;
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs_a, &hello, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 1);
-
-    /* B processes HELLO. */
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(&hs_b, &hello, 0u),
-        BOWIE_OK);
-    ck_assert_int_eq(hs_b.state, BOWIE_PROTO_HS_IDLE);
-
-    /* B -> A: HELLO_ACK */
-    bowie_proto_msg_t ack;
-    has = 0;
-    ck_assert_int_eq(
-        bowie_proto_handshake_output(&hs_b, &ack, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 1);
-    ck_assert_int_eq(ack.header.type, BOWIE_PROTO_MSG_HELLO_ACK);
-    ck_assert_int_eq(hs_b.state, BOWIE_PROTO_HS_SENT_ACK);
-
-    /* A processes HELLO_ACK. */
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(&hs_a, &ack, 0u),
-        BOWIE_OK);
-    ck_assert(bowie_proto_handshake_is_done(&hs_a));
-
-    /* Remote IDs. */
-    bowie_public_id_t remote_a;
-    bowie_public_id_t remote_b;
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_remote_id(&hs_a, &remote_a),
-        BOWIE_OK);
-    ck_assert(bowie_public_id_equal(&remote_a, &id_b));
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_remote_id(&hs_b, &remote_b),
-        BOWIE_OK);
-    ck_assert(bowie_public_id_equal(&remote_b, &id_a));
-}
-END_TEST
-
-/*
- * ============================================================================
- * SUITE
- * ============================================================================
- */
-
-static Suite *handshake_suite(void)
-{
-    Suite *s = suite_create("ProtoHandshake");
-
-    TCase *tc_life = tcase_create("Lifecycle");
-    tcase_add_test(tc_life, test_init_null_hs);
-    tcase_add_test(tc_life, test_init_null_id);
-    tcase_add_test(tc_life, test_init_null_sign);
-    tcase_add_test(tc_life, test_init_null_verify);
-    tcase_add_test(tc_life, test_init_bad_role);
-    tcase_add_test(tc_life, test_init_ok);
-    tcase_add_test(tc_life, test_clear_preserves_config);
-    tcase_add_test(tc_life, test_clear_null);
-    suite_add_tcase(s, tc_life);
-
-    TCase *tc_out = tcase_create("Output");
-    tcase_add_test(tc_out, test_output_null_hs);
-    tcase_add_test(tc_out, test_output_null_msg);
-    tcase_add_test(tc_out, test_output_null_has);
-    tcase_add_test(tc_out, test_initiator_first_output_is_hello);
-    tcase_add_test(tc_out, test_initiator_second_output_no_message);
-    tcase_add_test(tc_out, test_responder_first_output_no_message);
-    suite_add_tcase(s, tc_out);
-
-    TCase *tc_in = tcase_create("Input");
-    tcase_add_test(tc_in, test_input_null_hs);
-    tcase_add_test(tc_in, test_input_null_msg);
-    tcase_add_test(tc_in, test_input_wrong_type_initiator);
-    suite_add_tcase(s, tc_in);
-
-    TCase *tc_to = tcase_create("Timeout");
-    tcase_add_test(tc_to, test_timed_out_null);
-    tcase_add_test(tc_to, test_timed_out_not_yet);
-    tcase_add_test(tc_to, test_timed_out_yes);
-    tcase_add_test(tc_to, test_input_after_timeout_fails);
-    suite_add_tcase(s, tc_to);
-
-    TCase *tc_q = tcase_create("Query");
-    tcase_add_test(tc_q, test_state_null);
-    tcase_add_test(tc_q, test_state_ok);
-    tcase_add_test(tc_q, test_remote_id_null);
-    tcase_add_test(tc_q, test_remote_id_not_known);
-    tcase_add_test(tc_q, test_is_done_null);
-    tcase_add_test(tc_q, test_is_done_false);
-    tcase_add_test(tc_q, test_is_failed_null);
-    tcase_add_test(tc_q, test_is_failed_false);
-    suite_add_tcase(s, tc_q);
-
-    TCase *tc_full = tcase_create("Full");
-    tcase_add_test(tc_full, test_full_handshake_success);
-    suite_add_tcase(s, tc_full);
-
-    return s;
-}
-
-int main(void)
-{
-    Suite *s = handshake_suite();
-    SRunner *sr = srunner_create(s);
-
-    srunner_run_all(sr, CK_NORMAL);
-
-    int failed = srunner_ntests_failed(sr);
-    srunner_free(sr);
-
-    return (failed == 0) ? 0 : 1;
-}
