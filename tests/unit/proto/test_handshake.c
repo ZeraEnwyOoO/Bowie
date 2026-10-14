@@ -45,7 +45,7 @@
  *       |                        |
  *       |<----- HELLO_ACK -------|
  *       |                        |
- *     DONE                     DONE
+ *     DONE                  SENT_ACK
  *
  * The HELLO payload is:
  *
@@ -63,24 +63,21 @@
  *       32    32  responder nonce
  *       64    64  signature over (initiator nonce || responder nonce)
  *
- * The signature is produced by the caller's sign callback and
- * verified by the caller's verify callback.
+ * The output function returns BOWIE_OK with out_has_msg == 0
+ * when the current state has no message to send. It does not
+ * return an error for that case; the caller treats it as "no
+ * work to do". A genuine state error (for example, calling the
+ * output function on a handshake that is already DONE or
+ * FAILED) is still reported as BOWIE_ERR_STATE.
  *
- * ----------------------------------------------------------------------------
- * State transitions
- * ----------------------------------------------------------------------------
+ * The responder sets its state to SENT_HELLO when it receives
+ * a valid HELLO. That state tells the output function that the
+ * HELLO_ACK is due. After the ACK is sent, the state becomes
+ * SENT_ACK.
  *
- * Initiator:
- *   IDLE -> SENT_HELLO   on output HELLO
- *   SENT_HELLO -> DONE   on input HELLO_ACK
- *
- * Responder:
- *   IDLE -> SENT_HELLO   on input HELLO
- *   SENT_HELLO -> SENT_ACK on output HELLO_ACK
- *
- * A state that has no message to send returns BOWIE_OK with
- * out_has_msg set to 0. A state that cannot accept a message
- * returns BOWIE_ERR_STATE.
+ * The initiator moves from IDLE to SENT_HELLO when it sends
+ * HELLO, and from SENT_HELLO to DONE when it receives a valid
+ * HELLO_ACK.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -146,8 +143,8 @@ bowie_error_t bowie_proto_handshake_init(
     }
 
     memset(hs, 0, sizeof(*hs));
-    hs->state   = BOWIE_PROTO_HS_IDLE;
-    hs->role    = role;
+    hs->state    = BOWIE_PROTO_HS_IDLE;
+    hs->role     = role;
     hs->local_id = *local_id;
 
     hs->sign    = sign;
@@ -186,7 +183,7 @@ void bowie_proto_handshake_clear(bowie_proto_handshake_t *hs)
 
 /*
  * ============================================================================
- * OUTPUT
+ * OUTPUT — PAYLOAD BUILDERS
  * ============================================================================
  */
 
@@ -252,6 +249,12 @@ static bowie_error_t build_hello_ack_payload(
     return BOWIE_OK;
 }
 
+/*
+ * ============================================================================
+ * OUTPUT
+ * ============================================================================
+ */
+
 bowie_error_t bowie_proto_handshake_output(
     bowie_proto_handshake_t *hs,
     bowie_proto_msg_t       *out_msg,
@@ -304,19 +307,12 @@ bowie_error_t bowie_proto_handshake_output(
 
     /*
      * Responder.
+     *
+     * The responder has nothing to send in the IDLE state.
+     * The state moves to SENT_HELLO when a valid HELLO has
+     * been received; at that point the ACK is due.
      */
-    if (hs->state == BOWIE_PROTO_HS_IDLE) {
-        /*
-         * The responder has nothing to send until it has
-         * received HELLO.
-         */
-        return BOWIE_OK;
-    }
-
     if (hs->state != BOWIE_PROTO_HS_SENT_HELLO) {
-        /*
-         * The responder has already sent HELLO_ACK.
-         */
         return BOWIE_OK;
     }
 
@@ -390,9 +386,9 @@ static bowie_error_t handle_hello(
     hs->have_local_nonce  = 1;
 
     /*
-     * The responder has received HELLO. It can now send
-     * HELLO_ACK. The state is set to SENT_HELLO so that the
-     * output function knows it has work to do.
+     * The responder has received a valid HELLO. The state
+     * moves to SENT_HELLO so that the output function knows
+     * the HELLO_ACK is due.
      */
     hs->state = BOWIE_PROTO_HS_SENT_HELLO;
 
