@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -21,7 +21,7 @@
  * BOWIE — PROTOCOL HANDSHAKE IMPLEMENTATION
  * ============================================================================
  *
- * The handshake state machine for the Bowie protocol.
+ * The handshake state machine.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
@@ -34,85 +34,110 @@
  *   - No revocation check.
  *
  * ----------------------------------------------------------------------------
- * Design notes
- * ----------------------------------------------------------------------------
- *
- * The handshake is a two-message exchange:
- *
- *   Initiator                Responder
- *       |                        |
- *       |------ HELLO ---------->|
- *       |                        |
- *       |<----- HELLO_ACK -------|
- *       |                        |
- *     DONE                     DONE
- *
- * The HELLO payload is:
- *
- *   offset  size  field
- *   ------  ----  -----
- *        0    32  initiator public ID
- *       32    32  initiator nonce
- *       64    64  signature over the nonce
- *
- * The HELLO_ACK payload is:
- *
- *   offset  size  field
- *   ------  ----  -----
- *        0    32  responder public ID
- *       32    32  responder nonce
- *       64    64  signature over (initiator nonce || responder nonce)
- *
- * The signature is produced by the caller's sign callback and
- * verified by the caller's verify callback. The handshake does
- * not know how to sign or verify; it asks the caller.
- *
- * The nonces are random. The handshake does not generate them;
- * the caller's sign callback is given a message that includes
- * the nonce, so a caller that wants a fresh nonce must set it
- * before the first output call.
- *
- * A handshake has a timeout. The input function checks the
- * timeout before it processes the message; a handshake that has
- * timed out moves to FAILED and returns BOWIE_ERR_TIMEOUT.
- *
- * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <stdint.h>                   uint8_t, uint32_t
- *   <stddef.h>                   size_t
  *   <string.h>                   memset, memcpy
- *   "bowie/types.h"              bowie_public_id_t, bowie_mtime_t
- *   "bowie/err.h"                error codes
- *   "proto/message.h"            the message type
  *   "proto/handshake.h"          the declarations
  * ============================================================================
  */
 
-#include <stdint.h>
-#include <stddef.h>
 #include <string.h>
 
-#include "bowie/types.h"
-#include "bowie/err.h"
-#include "proto/message.h"
 #include "proto/handshake.h"
 
 /*
  * ============================================================================
- * PAYLOAD LENGTHS
+ * INTERNAL — PAYLOAD BUILDERS
  * ============================================================================
- *
- * The HELLO payload is 32 + 32 + 64 = 128 bytes.
- * The HELLO_ACK payload is 32 + 32 + 64 = 128 bytes.
  */
 
-#define HELLO_PAYLOAD_LEN \
-    (BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN + BOWIE_PROTO_SIG_LEN)
+/*
+ * Build the HELLO payload into buf.
+ *
+ * The buffer must have room for BOWIE_PROTO_HELLO_PAYLOAD_LEN
+ * bytes.
+ */
+static bowie_error_t build_hello_payload(
+    bowie_proto_handshake_t *hs,
+    uint8_t                 *buf,
+    size_t                   cap,
+    size_t                  *out_len)
+{
+    if (hs == NULL || buf == NULL || out_len == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (cap < BOWIE_PROTO_HELLO_PAYLOAD_LEN) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
 
-#define HELLO_ACK_PAYLOAD_LEN \
-    (BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN + BOWIE_PROTO_SIG_LEN)
+    /* Public ID at offset 0. */
+    memcpy(buf, hs->local_id.bytes, BOWIE_PUBLIC_ID_LEN);
+
+    /* Nonce at offset 32. */
+    memcpy(buf + BOWIE_PUBLIC_ID_LEN,
+           hs->local_nonce,
+           BOWIE_PROTO_NONCE_LEN);
+
+    /* Signature at offset 64. Signs the nonce only. */
+    bowie_error_t rc = hs->sign(
+        hs->ctx,
+        hs->local_nonce, BOWIE_PROTO_NONCE_LEN,
+        buf + BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    *out_len = BOWIE_PROTO_HELLO_PAYLOAD_LEN;
+    return BOWIE_OK;
+}
+
+/*
+ * Build the HELLO_ACK payload into buf.
+ *
+ * The signed message is the concatenation of the two nonces:
+ *   initiator nonce (remote_nonce) || responder nonce (local_nonce)
+ */
+static bowie_error_t build_hello_ack_payload(
+    bowie_proto_handshake_t *hs,
+    uint8_t                 *buf,
+    size_t                   cap,
+    size_t                  *out_len)
+{
+    if (hs == NULL || buf == NULL || out_len == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (cap < BOWIE_PROTO_HELLO_ACK_PAYLOAD_LEN) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
+
+    /* Public ID at offset 0. */
+    memcpy(buf, hs->local_id.bytes, BOWIE_PUBLIC_ID_LEN);
+
+    /* Nonce at offset 32. */
+    memcpy(buf + BOWIE_PUBLIC_ID_LEN,
+           hs->local_nonce,
+           BOWIE_PROTO_NONCE_LEN);
+
+    /* Signed message = initiator nonce || responder nonce. */
+    uint8_t signed_msg[BOWIE_PROTO_NONCE_LEN * 2u];
+    memcpy(signed_msg,
+           hs->remote_nonce, BOWIE_PROTO_NONCE_LEN);
+    memcpy(signed_msg + BOWIE_PROTO_NONCE_LEN,
+           hs->local_nonce, BOWIE_PROTO_NONCE_LEN);
+
+    /* Signature at offset 64. */
+    bowie_error_t rc = hs->sign(
+        hs->ctx,
+        signed_msg, sizeof(signed_msg),
+        buf + BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+
+    *out_len = BOWIE_PROTO_HELLO_ACK_PAYLOAD_LEN;
+    return BOWIE_OK;
+}
 
 /*
  * ============================================================================
@@ -140,13 +165,14 @@ bowie_error_t bowie_proto_handshake_init(
     }
 
     memset(hs, 0, sizeof(*hs));
-    hs->state   = BOWIE_PROTO_HS_IDLE;
-    hs->role    = role;
-    hs->local_id = *local_id;
 
-    hs->sign    = sign;
-    hs->verify  = verify;
-    hs->ctx     = ctx;
+    hs->state        = BOWIE_PROTO_HS_IDLE;
+    hs->role         = role;
+    hs->local_id     = *local_id;
+
+    hs->sign         = sign;
+    hs->verify       = verify;
+    hs->ctx          = ctx;
 
     hs->started_at_ms = now_ms;
     hs->timeout_ms    = (timeout_ms == 0u)
@@ -163,23 +189,33 @@ void bowie_proto_handshake_clear(bowie_proto_handshake_t *hs)
     }
 
     /*
-     * Preserve the callbacks, the local ID, and the timeout.
-     * Reset the state, the nonces, and the remote ID.
+     * Preserve callbacks, local ID, local nonce, and timeout.
+     * Reset the state, the remote ID, and the remote nonce.
      */
     bowie_proto_hs_sign_fn   sign    = hs->sign;
     bowie_proto_hs_verify_fn verify  = hs->verify;
     void                    *ctx     = hs->ctx;
     bowie_public_id_t        local   = hs->local_id;
     bowie_mtime_t            timeout = hs->timeout_ms;
+    uint8_t                  local_nonce[BOWIE_PROTO_NONCE_LEN];
+    int                      have_local_nonce = hs->have_local_nonce;
+
+    memcpy(local_nonce, hs->local_nonce, BOWIE_PROTO_NONCE_LEN);
 
     memset(hs, 0, sizeof(*hs));
 
-    hs->sign         = sign;
-    hs->verify       = verify;
-    hs->ctx          = ctx;
-    hs->local_id     = local;
-    hs->timeout_ms   = timeout;
-    hs->state        = BOWIE_PROTO_HS_IDLE;
+    hs->sign             = sign;
+    hs->verify           = verify;
+    hs->ctx              = ctx;
+    hs->local_id         = local;
+    hs->timeout_ms       = timeout;
+    hs->have_local_nonce = have_local_nonce;
+
+    if (have_local_nonce) {
+        memcpy(hs->local_nonce, local_nonce, BOWIE_PROTO_NONCE_LEN);
+    }
+
+    hs->state = BOWIE_PROTO_HS_IDLE;
 }
 
 /*
@@ -187,109 +223,6 @@ void bowie_proto_handshake_clear(bowie_proto_handshake_t *hs)
  * OUTPUT
  * ============================================================================
  */
-
-/*
- * Build the HELLO payload.
- *
- * The payload is written into the caller's buffer, which must
- * have room for HELLO_PAYLOAD_LEN bytes.
- */
-static bowie_error_t build_hello_payload(
-    bowie_proto_handshake_t *hs,
-    uint8_t                 *buf,
-    size_t                   cap,
-    size_t                  *out_len)
-{
-    if (cap < HELLO_PAYLOAD_LEN) {
-        return BOWIE_ERR_TOO_SMALL;
-    }
-
-    /*
-     * The public ID is at offset 0.
-     */
-    memcpy(buf, hs->local_id.bytes, BOWIE_PUBLIC_ID_LEN);
-
-    /*
-     * The nonce is at offset 32. The handshake does not
-     * generate the nonce; it writes whatever is in the
-     * local_nonce field. A caller that wants a fresh nonce
-     * must set it before the first output call.
-     */
-    memcpy(buf + BOWIE_PUBLIC_ID_LEN,
-           hs->local_nonce,
-           BOWIE_PROTO_NONCE_LEN);
-
-    /*
-     * The signature is at offset 64. The sign callback signs
-     * the nonce only; the public ID is not signed, because
-     * the verifier gets the public ID from the same payload
-     * and uses it to verify.
-     */
-    bowie_error_t rc = hs->sign(
-        hs->ctx,
-        hs->local_nonce, BOWIE_PROTO_NONCE_LEN,
-        buf + BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN);
-    if (rc != BOWIE_OK) {
-        return rc;
-    }
-
-    *out_len = HELLO_PAYLOAD_LEN;
-    return BOWIE_OK;
-}
-
-/*
- * Build the HELLO_ACK payload.
- *
- * The payload is written into the caller's buffer, which must
- * have room for HELLO_ACK_PAYLOAD_LEN bytes.
- */
-static bowie_error_t build_hello_ack_payload(
-    bowie_proto_handshake_t *hs,
-    uint8_t                 *buf,
-    size_t                   cap,
-    size_t                  *out_len)
-{
-    if (cap < HELLO_ACK_PAYLOAD_LEN) {
-        return BOWIE_ERR_TOO_SMALL;
-    }
-
-    /*
-     * The public ID is at offset 0.
-     */
-    memcpy(buf, hs->local_id.bytes, BOWIE_PUBLIC_ID_LEN);
-
-    /*
-     * The nonce is at offset 32.
-     */
-    memcpy(buf + BOWIE_PUBLIC_ID_LEN,
-           hs->local_nonce,
-           BOWIE_PROTO_NONCE_LEN);
-
-    /*
-     * The signature is at offset 64. The signed message is
-     * the concatenation of the two nonces:
-     *   initiator nonce || responder nonce
-     *
-     * The initiator nonce is stored in remote_nonce; the
-     * responder nonce is stored in local_nonce.
-     */
-    uint8_t signed_msg[BOWIE_PROTO_NONCE_LEN * 2u];
-    memcpy(signed_msg,
-           hs->remote_nonce, BOWIE_PROTO_NONCE_LEN);
-    memcpy(signed_msg + BOWIE_PROTO_NONCE_LEN,
-           hs->local_nonce, BOWIE_PROTO_NONCE_LEN);
-
-    bowie_error_t rc = hs->sign(
-        hs->ctx,
-        signed_msg, sizeof(signed_msg),
-        buf + BOWIE_PUBLIC_ID_LEN + BOWIE_PROTO_NONCE_LEN);
-    if (rc != BOWIE_OK) {
-        return rc;
-    }
-
-    *out_len = HELLO_ACK_PAYLOAD_LEN;
-    return BOWIE_OK;
-}
 
 bowie_error_t bowie_proto_handshake_output(
     bowie_proto_handshake_t *hs,
@@ -307,22 +240,19 @@ bowie_error_t bowie_proto_handshake_output(
         return BOWIE_OK;
     }
 
-    /*
-     * The payload is written into a small stack buffer. The
-     * buffer is large enough for the largest handshake
-     * payload.
-     */
-    uint8_t payload[HELLO_ACK_PAYLOAD_LEN];
-    size_t  payload_len = 0u;
+    uint8_t *payload     = hs->out_payload;
+    size_t   payload_cap = sizeof(hs->out_payload);
+    size_t   payload_len = 0u;
 
     bowie_error_t rc = BOWIE_OK;
 
+    /* ----- Initiator ----- */
     if (hs->role == BOWIE_PROTO_HS_INITIATOR) {
         if (hs->state != BOWIE_PROTO_HS_IDLE) {
             return BOWIE_ERR_STATE;
         }
 
-        rc = build_hello_payload(hs, payload, sizeof(payload),
+        rc = build_hello_payload(hs, payload, payload_cap,
                                  &payload_len);
         if (rc != BOWIE_OK) {
             return rc;
@@ -335,14 +265,12 @@ bowie_error_t bowie_proto_handshake_output(
         out_msg->payload.data   = payload;
         out_msg->payload.len    = payload_len;
 
-        hs->state = BOWIE_PROTO_HS_SENT_HELLO;
+        hs->state    = BOWIE_PROTO_HS_SENT_HELLO;
         *out_has_msg = 1;
         return BOWIE_OK;
     }
 
-    /*
-     * Responder.
-     */
+    /* ----- Responder ----- */
     if (hs->state == BOWIE_PROTO_HS_IDLE) {
         /*
          * The responder has nothing to send until it has
@@ -355,7 +283,7 @@ bowie_error_t bowie_proto_handshake_output(
         return BOWIE_ERR_STATE;
     }
 
-    rc = build_hello_ack_payload(hs, payload, sizeof(payload),
+    rc = build_hello_ack_payload(hs, payload, payload_cap,
                                  &payload_len);
     if (rc != BOWIE_OK) {
         return rc;
@@ -368,7 +296,7 @@ bowie_error_t bowie_proto_handshake_output(
     out_msg->payload.data   = payload;
     out_msg->payload.len    = payload_len;
 
-    hs->state = BOWIE_PROTO_HS_SENT_ACK;
+    hs->state    = BOWIE_PROTO_HS_SENT_ACK;
     *out_has_msg = 1;
     return BOWIE_OK;
 }
@@ -403,16 +331,12 @@ static bowie_error_t handle_hello(
     bowie_proto_handshake_t *hs,
     const bowie_proto_msg_t *msg)
 {
-    if (msg->payload.len != HELLO_PAYLOAD_LEN) {
+    if (msg->payload.len != BOWIE_PROTO_HELLO_PAYLOAD_LEN) {
         return BOWIE_ERR_FORMAT;
     }
 
     const uint8_t *p = msg->payload.data;
 
-    /*
-     * The public ID is at offset 0. The nonce is at offset
-     * 32. The signature is at offset 64.
-     */
     bowie_public_id_t remote_id;
     memcpy(remote_id.bytes, p, BOWIE_PUBLIC_ID_LEN);
 
@@ -420,24 +344,15 @@ static bowie_error_t handle_hello(
     const uint8_t *sig   = p + BOWIE_PUBLIC_ID_LEN +
                            BOWIE_PROTO_NONCE_LEN;
 
-    /*
-     * Verify the signature over the nonce.
-     */
     if (!hs->verify(hs->ctx, &remote_id,
                     nonce, BOWIE_PROTO_NONCE_LEN, sig)) {
         hs->state = BOWIE_PROTO_HS_FAILED;
         return BOWIE_ERR_SIGN_INVALID;
     }
 
-    /*
-     * Store the remote ID and the remote nonce. The
-     * responder does not generate its own nonce here; it
-     * leaves the local nonce as whatever the caller set.
-     */
     hs->remote_id = remote_id;
     memcpy(hs->remote_nonce, nonce, BOWIE_PROTO_NONCE_LEN);
     hs->have_remote_nonce = 1;
-    hs->have_local_nonce  = 1;
 
     return BOWIE_OK;
 }
@@ -449,7 +364,7 @@ static bowie_error_t handle_hello_ack(
     bowie_proto_handshake_t *hs,
     const bowie_proto_msg_t *msg)
 {
-    if (msg->payload.len != HELLO_ACK_PAYLOAD_LEN) {
+    if (msg->payload.len != BOWIE_PROTO_HELLO_ACK_PAYLOAD_LEN) {
         return BOWIE_ERR_FORMAT;
     }
 
@@ -463,10 +378,8 @@ static bowie_error_t handle_hello_ack(
                            BOWIE_PROTO_NONCE_LEN;
 
     /*
-     * Verify the signature over both nonces:
-     *   initiator nonce || responder nonce
-     *
-     * The initiator nonce is our own local nonce. The
+     * Signed message = initiator nonce || responder nonce.
+     * The initiator nonce is our own local_nonce. The
      * responder nonce is the one in the payload.
      */
     uint8_t signed_msg[BOWIE_PROTO_NONCE_LEN * 2u];
@@ -507,9 +420,6 @@ bowie_error_t bowie_proto_handshake_input(
         return BOWIE_ERR_TIMEOUT;
     }
 
-    /*
-     * The message type must fit the current state.
-     */
     if (msg->header.type == BOWIE_PROTO_MSG_HELLO) {
         if (hs->role != BOWIE_PROTO_HS_RESPONDER) {
             return BOWIE_ERR_STATE;
