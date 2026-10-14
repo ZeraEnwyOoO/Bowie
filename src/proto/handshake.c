@@ -34,6 +34,32 @@
  *   - No revocation check.
  *
  * ----------------------------------------------------------------------------
+ * State machine
+ * ----------------------------------------------------------------------------
+ *
+ *   Initiator                          Responder
+ *   ─────────                          ─────────
+ *   IDLE
+ *     │
+ *     │ output(HELLO)
+ *     ▼
+ *   SENT_HELLO                         IDLE
+ *                                        │
+ *                                        │ input(HELLO)
+ *                                        ▼
+ *                                      HELLO_RECEIVED
+ *                                        │
+ *                                        │ output(HELLO_ACK)
+ *                                        ▼
+ *                                      SENT_ACK
+ *     │
+ *     │ input(HELLO_ACK)
+ *     ▼
+ *   DONE
+ *
+ *   Any state ──error──> FAILED
+ *
+ * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
@@ -57,6 +83,11 @@
  *
  * The buffer must have room for BOWIE_PROTO_HELLO_PAYLOAD_LEN
  * bytes.
+ *
+ * Layout:
+ *   [0..32)   local public ID
+ *   [32..64)  local nonce
+ *   [64..128) signature over the local nonce
  */
 static bowie_error_t build_hello_payload(
     bowie_proto_handshake_t *hs,
@@ -94,6 +125,14 @@ static bowie_error_t build_hello_payload(
 
 /*
  * Build the HELLO_ACK payload into buf.
+ *
+ * The buffer must have room for
+ * BOWIE_PROTO_HELLO_ACK_PAYLOAD_LEN bytes.
+ *
+ * Layout:
+ *   [0..32)   local public ID
+ *   [32..64)  local nonce
+ *   [64..128) signature over (remote_nonce || local_nonce)
  *
  * The signed message is the concatenation of the two nonces:
  *   initiator nonce (remote_nonce) || responder nonce (local_nonce)
@@ -166,13 +205,13 @@ bowie_error_t bowie_proto_handshake_init(
 
     memset(hs, 0, sizeof(*hs));
 
-    hs->state        = BOWIE_PROTO_HS_IDLE;
-    hs->role         = role;
-    hs->local_id     = *local_id;
+    hs->state         = BOWIE_PROTO_HS_IDLE;
+    hs->role          = role;
+    hs->local_id      = *local_id;
 
-    hs->sign         = sign;
-    hs->verify       = verify;
-    hs->ctx          = ctx;
+    hs->sign          = sign;
+    hs->verify        = verify;
+    hs->ctx           = ctx;
 
     hs->started_at_ms = now_ms;
     hs->timeout_ms    = (timeout_ms == 0u)
@@ -279,7 +318,7 @@ bowie_error_t bowie_proto_handshake_output(
         return BOWIE_OK;
     }
 
-    if (hs->state != BOWIE_PROTO_HS_SENT_HELLO) {
+    if (hs->state != BOWIE_PROTO_HS_HELLO_RECEIVED) {
         return BOWIE_ERR_STATE;
     }
 
@@ -326,6 +365,9 @@ int bowie_proto_handshake_timed_out(
 
 /*
  * Process an incoming HELLO.
+ *
+ * On success, the responder transitions to HELLO_RECEIVED.
+ * The next output() call produces HELLO_ACK.
  */
 static bowie_error_t handle_hello(
     bowie_proto_handshake_t *hs,
@@ -354,11 +396,20 @@ static bowie_error_t handle_hello(
     memcpy(hs->remote_nonce, nonce, BOWIE_PROTO_NONCE_LEN);
     hs->have_remote_nonce = 1;
 
+    /*
+     * Transition so output() knows to produce HELLO_ACK.
+     * Without this, output() would see IDLE and return
+     * "nothing to send".
+     */
+    hs->state = BOWIE_PROTO_HS_HELLO_RECEIVED;
+
     return BOWIE_OK;
 }
 
 /*
  * Process an incoming HELLO_ACK.
+ *
+ * On success, the initiator transitions to DONE.
  */
 static bowie_error_t handle_hello_ack(
     bowie_proto_handshake_t *hs,
