@@ -206,6 +206,9 @@ LIB_SRCS := \
     src/dht/search.c \
     src/dht/config.c \
     src/dht/dht.c \
+    src/proto/message.c \
+    src/proto/framing.c \
+    src/proto/handshake.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS)
 
@@ -253,7 +256,10 @@ UNIT_TEST_SRCS := \
     tests/unit/dht/test_security.c \
     tests/unit/dht/test_search.c \
     tests/unit/dht/test_config.c \
-    tests/unit/dht/test_dht.c
+    tests/unit/dht/test_dht.c \
+    tests/unit/proto/test_message.c \
+    tests/unit/proto/test_framing.c \
+    tests/unit/proto/test_handshake.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
