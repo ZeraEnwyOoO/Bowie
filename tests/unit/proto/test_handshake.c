@@ -55,6 +55,10 @@
  * out_has_msg == 0 when there is no message to send. It does
  * not treat that as an error.
  *
+ * Function pointers are compared directly, not through
+ * ck_assert_ptr_eq, because ISO C does not allow a function
+ * pointer to be converted to void *.
+ *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
@@ -303,8 +307,8 @@ START_TEST(test_init_initiator_ok)
     ck_assert_uint_eq(hs.local_id.bytes[0], 0x11u);
     ck_assert_uint_eq(hs.timeout_ms, 1000u);
     ck_assert_uint_eq(hs.started_at_ms, 100u);
-    ck_assert_ptr_eq(hs.sign, fake_sign);
-    ck_assert_ptr_eq(hs.verify, fake_verify);
+    ck_assert(hs.sign == fake_sign);
+    ck_assert(hs.verify == fake_verify);
     ck_assert_ptr_eq(hs.ctx, &fc);
 }
 END_TEST
@@ -404,8 +408,8 @@ START_TEST(test_clear_preserves_callbacks_and_local)
 
     bowie_proto_handshake_clear(&hs);
 
-    ck_assert_ptr_eq(hs.sign, fake_sign);
-    ck_assert_ptr_eq(hs.verify, fake_verify);
+    ck_assert(hs.sign == fake_sign);
+    ck_assert(hs.verify == fake_verify);
     ck_assert_ptr_eq(hs.ctx, &fc);
     ck_assert_uint_eq(hs.local_id.bytes[0], 0x11u);
     ck_assert_uint_eq(hs.timeout_ms, 1000u);
