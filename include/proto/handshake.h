@@ -31,7 +31,7 @@
  *       |                        |
  *       |<----- HELLO_ACK -------|
  *       |                        |
- *     DONE                     DONE
+ *     DONE                HELLO_RECEIVED → SENT_ACK
  *
  * The handshake does not sign or verify. It calls the
  * caller's sign and verify callbacks. The caller owns the
@@ -156,19 +156,21 @@ typedef enum bowie_proto_hs_role {
  * STATE
  * ============================================================================
  *
- *   IDLE         nothing sent or received yet
- *   SENT_HELLO   initiator has sent HELLO, waiting for ACK
- *   SENT_ACK     responder has received HELLO and sent ACK
- *   DONE         handshake completed successfully
- *   FAILED       handshake failed; no further messages are sent
+ *   IDLE             nothing sent or received yet
+ *   SENT_HELLO       initiator sent HELLO, waiting for ACK
+ *   HELLO_RECEIVED   responder received HELLO, ACK not yet sent
+ *   SENT_ACK         responder sent ACK
+ *   DONE             handshake completed successfully
+ *   FAILED           handshake failed; no further messages are sent
  */
 
 typedef enum bowie_proto_hs_state {
-    BOWIE_PROTO_HS_IDLE       = 0,
-    BOWIE_PROTO_HS_SENT_HELLO = 1,
-    BOWIE_PROTO_HS_SENT_ACK   = 2,
-    BOWIE_PROTO_HS_DONE       = 3,
-    BOWIE_PROTO_HS_FAILED     = 4,
+    BOWIE_PROTO_HS_IDLE           = 0,
+    BOWIE_PROTO_HS_SENT_HELLO     = 1,
+    BOWIE_PROTO_HS_HELLO_RECEIVED = 2,
+    BOWIE_PROTO_HS_SENT_ACK       = 3,
+    BOWIE_PROTO_HS_DONE           = 4,
+    BOWIE_PROTO_HS_FAILED         = 5,
 } bowie_proto_hs_state_t;
 
 /*
@@ -193,11 +195,11 @@ typedef bowie_error_t (*bowie_proto_hs_sign_fn)(
     uint8_t       *out_sig);
 
 typedef int (*bowie_proto_hs_verify_fn)(
-    void                   *ctx,
+    void                    *ctx,
     const bowie_public_id_t *id,
-    const uint8_t          *data,
-    size_t                  len,
-    const uint8_t          *sig);
+    const uint8_t           *data,
+    size_t                   len,
+    const uint8_t           *sig);
 
 /*
  * ============================================================================
