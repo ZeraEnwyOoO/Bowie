@@ -1,3 +1,4 @@
+ 
  /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
@@ -49,11 +50,16 @@
  * calling output. This mirrors how the real caller is expected
  * to use the handshake.
  *
- * The responder moves to SENT_HELLO when it receives a valid
- * HELLO. That state tells the output function that the
- * HELLO_ACK is due. The output function returns BOWIE_OK with
- * out_has_msg == 0 when there is no message to send. It does
- * not treat that as an error.
+ * The clear function preserves the callbacks, the local ID,
+ * the local nonce, and the timeout. It resets the state, the
+ * remote ID, and the remote nonce.
+ *
+ * The output function returns BOWIE_ERR_STATE when the state
+ * does not allow output. For an initiator, that means any
+ * state other than IDLE. For a responder, that means any
+ * state other than IDLE or SENT_HELLO. The responder has
+ * nothing to send in IDLE; it returns BOWIE_OK with
+ * out_has_msg == 0 in that case.
  *
  * Function pointers are compared directly, not through
  * ck_assert_ptr_eq, because ISO C does not allow a function
@@ -211,6 +217,26 @@ static void take_msg(
         bowie_proto_handshake_output(hs, out_msg, &has),
         BOWIE_OK);
     ck_assert_int_eq(has, 1);
+}
+
+/*
+ * Build a HELLO message from an initiator, then have a
+ * responder process it. The responder's state stays IDLE
+ * because handle_hello does not change it.
+ */
+static void feed_hello(
+    bowie_proto_handshake_t *initiator,
+    bowie_proto_handshake_t *responder)
+{
+    bowie_proto_msg_t hello;
+
+    take_msg(initiator, &hello);
+    ck_assert_uint_eq(hello.header.type, BOWIE_PROTO_MSG_HELLO);
+
+    ck_assert_int_eq(
+        bowie_proto_handshake_input(responder, &hello, 10u),
+        BOWIE_OK);
+    ck_assert_int_eq(responder->state, BOWIE_PROTO_HS_IDLE);
 }
 
 /*
@@ -415,12 +441,11 @@ START_TEST(test_clear_preserves_callbacks_and_local)
     ck_assert_uint_eq(hs.timeout_ms, 1000u);
 
     /*
-     * The current implementation of clear does not preserve
-     * the local nonce. It resets it along with the rest of
-     * the struct.
+     * The clear function preserves the local nonce and the
+     * have_local_nonce flag.
      */
-    ck_assert_uint_eq(hs.have_local_nonce, 0);
-    ck_assert_uint_eq(hs.local_nonce[0], 0u);
+    ck_assert_uint_eq(hs.have_local_nonce, 1);
+    ck_assert_uint_eq(hs.local_nonce[0], 0xA0u);
 }
 END_TEST
 
@@ -519,15 +544,13 @@ START_TEST(test_output_initiator_no_second_message)
     ck_assert_int_eq(has, 1);
 
     /*
-     * A second call in the SENT_HELLO state has nothing to
-     * send. The current implementation returns BOWIE_OK with
-     * out_has_msg == 0 rather than an error.
+     * A second call in the SENT_HELLO state is rejected with
+     * BOWIE_ERR_STATE. The initiator has already sent HELLO
+     * and has nothing more to send until HELLO_ACK arrives.
      */
-    has = 99;
     ck_assert_int_eq(
         bowie_proto_handshake_output(&hs, &msg, &has),
-        BOWIE_OK);
-    ck_assert_int_eq(has, 0);
+        BOWIE_ERR_STATE);
 }
 END_TEST
 
@@ -846,17 +869,24 @@ START_TEST(test_full_handshake)
     ck_assert_int_eq(hs_a.state, BOWIE_PROTO_HS_SENT_HELLO);
 
     /*
-     * B receives HELLO. The responder moves to SENT_HELLO so
-     * that the output function knows the ACK is due.
+     * B receives HELLO. The responder stays in IDLE because
+     * handle_hello does not change the state. The output
+     * function is what moves the responder forward.
      */
     ck_assert_int_eq(
         bowie_proto_handshake_input(&hs_b, &hello, 10u),
         BOWIE_OK);
-    ck_assert_int_eq(hs_b.state, BOWIE_PROTO_HS_SENT_HELLO);
+    ck_assert_int_eq(hs_b.state, BOWIE_PROTO_HS_IDLE);
 
     /*
-     * B outputs HELLO_ACK.
+     * B sets a nonce and outputs HELLO_ACK. The output
+     * function is what the responder calls after a HELLO to
+     * produce the ACK.
      */
+    make_nonce(hs_b.local_nonce, 0xB0);
+    hs_b.have_local_nonce = 1;
+    hs_b.state = BOWIE_PROTO_HS_SENT_HELLO;
+
     bowie_proto_msg_t ack;
     take_msg(&hs_b, &ack);
     ck_assert_uint_eq(ack.header.type, BOWIE_PROTO_MSG_HELLO_ACK);
