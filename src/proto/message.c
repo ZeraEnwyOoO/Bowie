@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -185,9 +185,9 @@ bowie_error_t bowie_proto_header_encode(
     buf[0] = hdr->version;
     buf[1] = hdr->type;
 
-    bowie_store_be16(buf + 2, hdr->flags);
-    bowie_store_be32(buf + 4, hdr->length);
-    bowie_store_be32(buf + 8, hdr->msg_id);
+    bowie_be16_put(buf + 2, hdr->flags);
+    bowie_be32_put(buf + 4, hdr->length);
+    bowie_be32_put(buf + 8, hdr->msg_id);
 
     return BOWIE_OK;
 }
@@ -219,9 +219,9 @@ bowie_error_t bowie_proto_header_decode(
         return BOWIE_ERR_NOT_SUPPORTED;
     }
 
-    hdr->flags   = bowie_load_be16(buf + 2);
-    hdr->length  = bowie_load_be32(buf + 4);
-    hdr->msg_id  = bowie_load_be32(buf + 8);
+    hdr->flags   = bowie_be16_get(buf + 2);
+    hdr->length  = bowie_be32_get(buf + 4);
+    hdr->msg_id  = bowie_be32_get(buf + 8);
 
     if (hdr->length > BOWIE_PROTO_MAX_PAYLOAD) {
         return BOWIE_ERR_TOO_LARGE;
