@@ -1,4 +1,3 @@
- 
  /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
@@ -217,26 +216,6 @@ static void take_msg(
         bowie_proto_handshake_output(hs, out_msg, &has),
         BOWIE_OK);
     ck_assert_int_eq(has, 1);
-}
-
-/*
- * Build a HELLO message from an initiator, then have a
- * responder process it. The responder's state stays IDLE
- * because handle_hello does not change it.
- */
-static void feed_hello(
-    bowie_proto_handshake_t *initiator,
-    bowie_proto_handshake_t *responder)
-{
-    bowie_proto_msg_t hello;
-
-    take_msg(initiator, &hello);
-    ck_assert_uint_eq(hello.header.type, BOWIE_PROTO_MSG_HELLO);
-
-    ck_assert_int_eq(
-        bowie_proto_handshake_input(responder, &hello, 10u),
-        BOWIE_OK);
-    ck_assert_int_eq(responder->state, BOWIE_PROTO_HS_IDLE);
 }
 
 /*
