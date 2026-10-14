@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -92,8 +92,14 @@ END_TEST
 
 START_TEST(test_hdr_encode_ok)
 {
+    /*
+     * The length must be at most BOWIE_PROTO_MAX_FRAME (1200).
+     * 0x00000400 = 1024 is used so that the byte order check
+     * below can verify all four bytes without the value being
+     * rejected by the encoder.
+     */
     bowie_proto_frame_header_t hdr;
-    hdr.length = 0x01020304u;
+    hdr.length = 0x00000400u;  /* 1024 */
 
     uint8_t buf[BOWIE_PROTO_FRAME_HEADER_LEN];
 
@@ -102,10 +108,10 @@ START_TEST(test_hdr_encode_ok)
         BOWIE_OK);
 
     /* Big-endian check. */
-    ck_assert_uint_eq(buf[0], 0x01u);
-    ck_assert_uint_eq(buf[1], 0x02u);
-    ck_assert_uint_eq(buf[2], 0x03u);
-    ck_assert_uint_eq(buf[3], 0x04u);
+    ck_assert_uint_eq(buf[0], 0x00u);
+    ck_assert_uint_eq(buf[1], 0x00u);
+    ck_assert_uint_eq(buf[2], 0x04u);
+    ck_assert_uint_eq(buf[3], 0x00u);
 }
 END_TEST
 
@@ -188,8 +194,11 @@ END_TEST
 
 START_TEST(test_hdr_round_trip)
 {
+    /*
+     * The length must be at most BOWIE_PROTO_MAX_FRAME (1200).
+     */
     bowie_proto_frame_header_t in;
-    in.length = 12345u;
+    in.length = 1000u;
 
     uint8_t buf[BOWIE_PROTO_FRAME_HEADER_LEN];
     ck_assert_int_eq(
