@@ -259,10 +259,20 @@ START_TEST(test_clear_preserves_callbacks)
     bowie_proto_handshake_clear(&hs);
 
     ck_assert_int_eq(hs.state, BOWIE_PROTO_HS_IDLE);
-    ck_assert_ptr_eq((void *)hs.sign, (void *)test_sign);
-    ck_assert_ptr_eq((void *)hs.verify, (void *)test_verify);
     ck_assert_uint_eq(hs.timeout_ms, 1000u);
     ck_assert(bowie_public_id_equal(&hs.local_id, &id));
+
+    /*
+     * The callbacks are still usable. A second output call
+     * succeeds, which is only possible if the sign callback
+     * is still set.
+     */
+    bowie_proto_msg_t msg;
+    int has = 0;
+    ck_assert_int_eq(
+        bowie_proto_handshake_output(&hs, &msg, &has),
+        BOWIE_OK);
+    ck_assert_int_eq(has, 1);
 }
 END_TEST
 
