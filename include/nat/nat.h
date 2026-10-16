@@ -53,6 +53,8 @@
  *     caller supplies their addresses through the config.
  *   - No policy. Whether to allow a STUN or TURN server is a
  *     config flag, not a decision made here.
+ *   - No string ownership. String fields in the config are
+ *     borrowed, not copied. See the config section below.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -62,8 +64,10 @@
  * layout, and frees it with bowie_nat_free().
  *
  * The config is a plain value struct. It is copied by
- * bowie_nat_new(); the caller may free any strings after the
- * call returns.
+ * bowie_nat_new(), but its string fields are borrowed: the
+ * caller must keep any string alive for the lifetime of the
+ * NAT handle. This matches the rest of the library, which
+ * copies values and borrows buffers.
  *
  * The signaling channel is a callback, not a function pointer
  * to a Protocol function. This keeps NAT below Protocol in the
@@ -142,21 +146,28 @@ typedef enum bowie_nat_state {
  * CONFIG
  * ============================================================================
  *
- * Configuration for a NAT instance. All fields are copied by
- * bowie_nat_new(); the caller may free any strings after the
- * call returns.
+ * Configuration for a NAT instance.
+ *
+ * The struct is copied by bowie_nat_new(). The string fields
+ * are borrowed, not copied: the caller must keep every
+ * non-NULL string alive for the lifetime of the NAT handle. A
+ * caller that builds a config on the stack must not let its
+ * strings go out of scope while the handle is alive.
  *
  * Zero-init the struct, then override the fields you need.
  * bowie_nat_default_config() returns a sane starting point.
  *
  * stun_server_host / stun_server_port
  *     The STUN server to use. If allow_server is 0, ignored.
- *     A NULL host disables STUN.
+ *     A NULL host disables STUN. A NULL host with a non-zero
+ *     port is a caller bug; the port is ignored.
  *
  * turn_server_host / turn_server_port / turn_username / turn_password
  *     The TURN server to use. If allow_server is 0, or if the
  *     host is NULL, ignored. A TURN server is optional; a
  *     connection that succeeds through STUN does not need it.
+ *     turn_username and turn_password may be NULL for a TURN
+ *     server that does not require credentials.
  *
  * allow_server
  *     If 0, no STUN or TURN server is used. Only local
@@ -165,7 +176,8 @@ typedef enum bowie_nat_state {
  *
  * connect_timeout_ms
  *     How long bowie_nat_connect() may wait for a usable
- *     connection before returning BOWIE_ERR_TIMEOUT.
+ *     connection before returning BOWIE_ERR_TIMEOUT. Zero
+ *     means use the backend's default.
  *
  * keepalive_ms
  *     How often the backend sends a keepalive on a connected
@@ -252,7 +264,7 @@ typedef bowie_error_t (*bowie_nat_signal_send_fn)(
     size_t                 len);
 
 typedef void (*bowie_nat_recv_fn)(
-    void         *ctx,
+    void          *ctx,
     const uint8_t *data,
     size_t         len);
 
@@ -269,8 +281,13 @@ typedef void (*bowie_nat_state_fn)(
 /*
  * Fill a config with default values.
  *
- * Defaults: no STUN host, no TURN host, allow_server = 0,
- * connect_timeout_ms = 10000, keepalive_ms = 0.
+ * The defaults describe a device behind a home NAT with no
+ * STUN and no TURN server. A caller that has a server sets
+ * the server fields and the allow_server flag afterward.
+ *
+ * The connect timeout is 10 seconds. A shorter timeout may
+ * fail on a slow link; a longer one delays failure. The
+ * keepalive interval is left to the backend.
  *
  * Passing NULL is a no-op.
  */
@@ -279,9 +296,10 @@ void bowie_nat_default_config(bowie_nat_config_t *cfg);
 /*
  * Create a NAT instance.
  *
- * The config is copied. The instance starts in the
- * DISCONNECTED state. Call bowie_nat_start() before
- * bowie_nat_connect().
+ * The config is copied. String fields are borrowed; the
+ * caller must keep them alive for the lifetime of the handle.
+ * The instance starts in the DISCONNECTED state. Call
+ * bowie_nat_start() before bowie_nat_connect().
  *
  * On success, *out points to the new instance. On failure,
  * *out is set to NULL.
@@ -321,8 +339,9 @@ bowie_error_t bowie_nat_stop(bowie_nat_t *nat);
 /*
  * Free a NAT instance.
  *
- * If the instance is started, it is stopped first. Passing
- * NULL is a no-op.
+ * If the instance is started, it is stopped first. The
+ * borrowed config strings are not freed. Passing NULL is a
+ * no-op.
  */
 void bowie_nat_free(bowie_nat_t *nat);
 
@@ -378,31 +397,45 @@ bowie_error_t bowie_nat_disconnect(bowie_nat_t *nat);
 /*
  * Send data on the connected channel.
  *
- * Returns the number of bytes accepted by the backend, or a
- * negative bowie_error_t on failure.
+ * Returns the number of bytes accepted on success.
+ * Returns a negative bowie_error_t cast to long on failure.
+ * A caller that wants the error code casts the return value
+ * back to bowie_error_t.
+ *
+ * This function requires an established connection. Calling
+ * it before connect, or after disconnect, is a state error.
  *
  * Returns BOWIE_ERR_NULL_ARG if nat or buf is NULL.
- * Returns BOWIE_ERR_INVAL if len is zero or the connection is
- * not in a state that can send.
+ * Returns BOWIE_ERR_INVAL if len is zero.
+ * Returns BOWIE_ERR_STATE if the connection is not in a state
+ * that can send.
  * Returns BOWIE_ERR_AGAIN if the backend's send buffer is full
  * and the caller should retry later.
  * Returns BOWIE_ERR_NETWORK if the backend reports a failure.
  */
-long bowie_nat_send(bowie_nat_t  *nat,
-                    const void   *buf,
-                    size_t        len);
+long bowie_nat_send(bowie_nat_t *nat,
+                    const void  *buf,
+                    size_t       len);
 
 /*
  * Receive data from the connected channel.
+ *
+ * This function may be called at any time. It does not
+ * require an established connection: a backend that has
+ * queued data before a disconnect must still be able to drain
+ * it. This is deliberate, and is the reason this function
+ * does not check the connection state the way send does.
  *
  * This is a pull-model wrapper. If a recv callback is
  * installed, the data has already been delivered to it; this
  * function then drains any queued data. If no recv callback
  * is installed, the data is queued here.
  *
- * Returns the number of bytes read, or a negative bowie_error_t
- * on failure. A return of 0 means no data is currently
- * available.
+ * Returns the number of bytes read on success.
+ * Returns 0 if no data is available.
+ * Returns a negative bowie_error_t cast to long on failure.
+ * A caller that wants the error code casts the return value
+ * back to bowie_error_t.
  *
  * Returns BOWIE_ERR_NULL_ARG if nat or buf is NULL.
  * Returns BOWIE_ERR_INVAL if cap is zero.
@@ -462,7 +495,7 @@ bowie_error_t bowie_nat_set_signal(bowie_nat_t             *nat,
  * Returns BOWIE_ERR_INTERNAL if the backend rejects the
  * payload.
  */
-bowie_error_t bowie_nat_signal_recv(bowie_nat_t  *nat,
+bowie_error_t bowie_nat_signal_recv(bowie_nat_t   *nat,
                                     const uint8_t *data,
                                     size_t         len);
 
