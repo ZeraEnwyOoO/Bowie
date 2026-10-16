@@ -26,7 +26,7 @@
 #   CFLAGS       compiler flags
 #   LDFLAGS      linker flags
 #   LDLIBS       libraries to link
-#   NAT_BACKEND  NAT backend to build (placeholder / libjuice / xury)
+#   NAT_BACKEND  NAT backend to build (libjuice only in v1)
 #   PLATFORM     platform backend (linux / android)
 #   V            verbose (V=1 to show full compile commands)
 #
@@ -94,27 +94,25 @@ endif
 # ----------------------------------------------------------------------------
 #
 # The NAT layer is implemented by a backend. The backend is
-# selected at build time. The default is the placeholder, which
-# is built-in and has no external dependency.
+# selected at build time.
 #
-# To build with a different backend:
+# The only backend in v1 is libjuice, an ICE library. It is
+# built from src/nat/nat_libjuice.c and links against -ljuice.
+#
+# The core NAT code (src/nat/nat.c) is always built. It does
+# not depend on the backend; it dispatches to it.
+#
+# To build with libjuice:
 #
 #   make NAT_BACKEND=libjuice
-#   make NAT_BACKEND=xury
 
-NAT_BACKEND ?= placeholder
+NAT_BACKEND ?= libjuice
 
-ifeq ($(NAT_BACKEND),placeholder)
-NAT_SRCS :=
-NAT_LIBS :=
-else ifeq ($(NAT_BACKEND),libjuice)
-NAT_SRCS := src/nat_libjuice.c
+ifeq ($(NAT_BACKEND),libjuice)
+NAT_SRCS := src/nat/nat_libjuice.c
 NAT_LIBS := -ljuice
-else ifeq ($(NAT_BACKEND),xury)
-NAT_SRCS := src/nat_xury.c
-NAT_LIBS := -lxury
 else
-$(error Unknown NAT_BACKEND: $(NAT_BACKEND). Use placeholder, libjuice, or xury.)
+$(error Unknown NAT_BACKEND: $(NAT_BACKEND). Use libjuice.)
 endif
 
 # ----------------------------------------------------------------------------
@@ -209,6 +207,7 @@ LIB_SRCS := \
     src/proto/message.c \
     src/proto/framing.c \
     src/proto/handshake.c \
+    src/nat/nat.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS)
 
@@ -259,7 +258,8 @@ UNIT_TEST_SRCS := \
     tests/unit/dht/test_dht.c \
     tests/unit/proto/test_message.c \
     tests/unit/proto/test_framing.c \
-    tests/unit/proto/test_handshake.c
+    tests/unit/proto/test_handshake.c \
+    tests/unit/nat/test_nat.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
@@ -356,7 +356,7 @@ help:
 	@echo
 	@echo "  CC           C compiler (default: cc)"
 	@echo "  PLATFORM     platform backend (linux / android)"
-	@echo "  NAT_BACKEND  NAT backend (placeholder / libjuice / xury)"
+	@echo "  NAT_BACKEND  NAT backend (libjuice)"
 	@echo "  V            set V=1 for verbose output"
 	@echo
 	@echo "Examples:"
