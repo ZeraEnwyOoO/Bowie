@@ -55,6 +55,9 @@
  *     config flag, not a decision made here.
  *   - No string ownership. String fields in the config are
  *     borrowed, not copied. See the config section below.
+ *   - No pull recv guarantee. The interface declares a pull
+ *     recv function, but a callback-based backend may not
+ *     support it. See the recv section below.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -90,6 +93,29 @@
  * does, so the caller can decide whether to trust the
  * connection. A backend that performs no NAT traversal
  * reports performs_nat_traversal = 0.
+ *
+ * ----------------------------------------------------------------------------
+ * Backend notes
+ * ----------------------------------------------------------------------------
+ *
+ * The interface is deliberately narrow, and the libjuice
+ * backend does not implement every part of it in the obvious
+ * way. Two points are worth stating up front, because they
+ * affect how a caller writes code against this header:
+ *
+ *   - Peer address is a hint. libjuice uses SDP signaling,
+ *     not a direct address, to establish a connection. The
+ *     peer address passed to bowie_nat_connect() is treated
+ *     as an initial remote candidate hint. A backend that
+ *     does not use it may ignore it. The signaling channel
+ *     is the real mechanism.
+ *
+ *   - Pull recv may return 0. libjuice delivers data through
+ *     the recv callback. The pull recv function exists for
+ *     symmetry and for backends that queue data, but the
+ *     libjuice backend always returns 0 from it. A caller
+ *     that wants to receive data through the libjuice
+ *     backend installs a recv callback.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -354,15 +380,18 @@ void bowie_nat_free(bowie_nat_t *nat);
 /*
  * Connect to a peer.
  *
- * The peer address is used as the initial remote candidate.
- * The backend may add more candidates as it learns them.
+ * The peer address is used as an initial remote candidate
+ * hint. A backend that uses SDP signaling rather than direct
+ * addressing may ignore it. The signaling channel is the real
+ * mechanism: signaling payloads produced by the backend are
+ * handed to the signal_send callback, and payloads received
+ * from the peer are fed in through bowie_nat_signal_recv().
  *
  * The call blocks until the connection reaches CONNECTED,
  * COMPLETED, or FAILED, or until connect_timeout_ms elapses.
  *
- * Signaling payloads produced by the backend are handed to
- * the signal_send callback. If no callback is installed, the
- * connection cannot proceed and the call fails with
+ * If no signal_send callback is installed, the connection
+ * cannot proceed and the call fails with
  * BOWIE_ERR_NOT_INITIALIZED.
  *
  * Returns BOWIE_OK on CONNECTED or COMPLETED.
@@ -420,16 +449,17 @@ long bowie_nat_send(bowie_nat_t *nat,
 /*
  * Receive data from the connected channel.
  *
+ * This function is a pull-model wrapper. A callback-based
+ * backend may not queue data, in which case this function
+ * always returns 0 and the caller must use a recv callback
+ * instead. The libjuice backend is callback-based: it always
+ * returns 0 from this function.
+ *
  * This function may be called at any time. It does not
  * require an established connection: a backend that has
  * queued data before a disconnect must still be able to drain
  * it. This is deliberate, and is the reason this function
  * does not check the connection state the way send does.
- *
- * This is a pull-model wrapper. If a recv callback is
- * installed, the data has already been delivered to it; this
- * function then drains any queued data. If no recv callback
- * is installed, the data is queued here.
  *
  * Returns the number of bytes read on success.
  * Returns 0 if no data is available.
