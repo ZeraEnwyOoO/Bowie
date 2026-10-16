@@ -90,12 +90,10 @@
  * the backend free of role negotiation, which is a Protocol
  * concern.
  *
- * The recv callback copies the data into a small fixed
- * buffer before delivering it. libjuice's callback contract
+ * The recv callback delivers data to the core through
+ * bowie_nat_internal_deliver(). libjuice's callback contract
  * only guarantees the data pointer for the duration of the
- * call; the core's contract is the same, so the copy is not
- * strictly needed. It is kept anyway so that the two
- * contracts do not have to be reasoned about together.
+ * call; the core's contract is the same, so no copy is made.
  *
  * The juice config is built by one helper,
  * lj_make_juice_config(). Both lj_create() and
@@ -138,6 +136,33 @@
 
 /*
  * ============================================================================
+ * FORWARD DECLARATIONS
+ * ============================================================================
+ *
+ * The callbacks are referenced by lj_make_juice_config(), which
+ * is defined before them. The forward declarations let the
+ * helper name the callback pointers without reordering the
+ * file.
+ */
+
+static void on_state_changed(juice_agent_t *agent,
+                             juice_state_t  state,
+                             void          *user_ptr);
+
+static void on_candidate(juice_agent_t *agent,
+                         const char    *sdp,
+                         void          *user_ptr);
+
+static void on_gathering_done(juice_agent_t *agent,
+                              void          *user_ptr);
+
+static void on_recv(juice_agent_t *agent,
+                    const char    *data,
+                    size_t         size,
+                    void          *user_ptr);
+
+/*
+ * ============================================================================
  * BACKEND STATE
  * ============================================================================
  *
@@ -160,7 +185,9 @@
  * after connect_done is observed.
  *
  * The local_sdp buffer holds the most recent local
- * description. It is read by connect after gathering is done.
+ * description. It is written by the candidate callback and by
+ * the gathering_done callback. It is reserved for a future
+ * accessor; no accessor exists yet.
  */
 
 typedef struct nat_libjuice {
@@ -242,8 +269,7 @@ static bowie_error_t map_juice_error(int rc)
  * user_ptr. The user_ptr is the bowie_nat_t pointer, which is
  * what every callback expects.
  *
- * The helper does not touch the concurrency mode; the caller
- * sets it. The helper does not allocate.
+ * The helper does not allocate.
  */
 
 static void lj_make_juice_config(const bowie_nat_t   *nat,
