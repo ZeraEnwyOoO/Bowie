@@ -96,15 +96,22 @@
  * call; the core's contract is the same, so no copy is made.
  *
  * The juice config is built by one helper,
- * lj_make_juice_config(). Both lj_create() and
+ * lj_make_juice_config(). Both lj_create() and lj_start() and
  * lj_disconnect() need a config that reflects the caller's
  * STUN and TURN settings; building it in one place keeps the
- * two paths from drifting apart.
+ * three paths from drifting apart.
  *
- * stop() destroys the agent. libjuice has no explicit stop
- * for an agent; destroying it is the documented way to tear
- * down the connection. free() then only has to destroy the
- * mutex, the condition variable, and the backend struct.
+ * stop() destroys the agent, but not the backend state. start()
+ * recreates the agent if it was destroyed. This makes
+ * start/stop/start work, and keeps connect() as the single
+ * place that gathers candidates.
+ *
+ * Gathering is part of connect, not start. A start that
+ * gathered would produce the first signaling payload before
+ * the caller has installed a signal callback and before the
+ * peer is ready to receive it. Keeping gather in connect
+ * means the payload is produced exactly when the caller is
+ * ready to route it.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -519,12 +526,21 @@ static bowie_error_t lj_create(bowie_nat_t              *nat,
  * ============================================================================
  * OPS — START
  * ============================================================================
+ *
+ * Make the instance ready to connect.
+ *
+ * If stop destroyed the agent, recreate it from the same
+ * config. If the agent is already there, reuse it. The agent
+ * is never gathered here; gathering is part of connect, where
+ * the caller has already installed a signal callback and is
+ * ready to route the first payload.
  */
 
 static bowie_error_t lj_start(bowie_nat_t *nat)
 {
-    nat_libjuice_t *lj;
-    int             rc;
+    nat_libjuice_t      *lj;
+    juice_config_t       jcfg;
+    juice_turn_server_t  turn;
 
     if (nat == NULL || nat->backend == NULL) {
         return BOWIE_ERR_NULL_ARG;
@@ -532,10 +548,14 @@ static bowie_error_t lj_start(bowie_nat_t *nat)
 
     lj = (nat_libjuice_t *)nat->backend;
 
-    rc = juice_gather_candidates(lj->agent);
+    if (lj->agent == NULL) {
+        lj_make_juice_config(nat, &jcfg, &turn);
 
-    if (rc != JUICE_ERR_SUCCESS) {
-        return map_juice_error(rc);
+        lj->agent = juice_create(&jcfg);
+
+        if (lj->agent == NULL) {
+            return BOWIE_ERR_INTERNAL;
+        }
     }
 
     return BOWIE_OK;
@@ -626,6 +646,10 @@ static void lj_free(bowie_nat_t *nat)
  * a connection through SDP signaling, not through a direct
  * address. The address is a hint; the signaling channel does
  * the real work.
+ *
+ * Gathering happens here, not in start. This is the point at
+ * which the caller has installed a signal callback and is
+ * ready to route the first payload.
  *
  * The deadline is computed from CLOCK_REALTIME because
  * pthread_cond_timedwait expects it by default.
