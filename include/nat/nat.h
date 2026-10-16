@@ -426,13 +426,19 @@ bowie_error_t bowie_nat_disconnect(bowie_nat_t *nat);
 /*
  * Send data on the connected channel.
  *
+ * This function requires an established connection. Calling
+ * it before connect, or after disconnect, is a state error.
+ *
  * Returns the number of bytes accepted on success.
  * Returns a negative bowie_error_t cast to long on failure.
  * A caller that wants the error code casts the return value
- * back to bowie_error_t.
+ * back to bowie_error_t. For example:
  *
- * This function requires an established connection. Calling
- * it before connect, or after disconnect, is a state error.
+ *     long n = bowie_nat_send(nat, buf, len);
+ *     if (n < 0) {
+ *         bowie_error_t err = (bowie_error_t)n;
+ *         // handle err
+ *     }
  *
  * Returns BOWIE_ERR_NULL_ARG if nat or buf is NULL.
  * Returns BOWIE_ERR_INVAL if len is zero.
@@ -469,8 +475,6 @@ long bowie_nat_send(bowie_nat_t *nat,
  *
  * Returns BOWIE_ERR_NULL_ARG if nat or buf is NULL.
  * Returns BOWIE_ERR_INVAL if cap is zero.
- * Returns BOWIE_ERR_WOULD_BLOCK if no data is available and
- * the connection is healthy.
  */
 long bowie_nat_recv(bowie_nat_t *nat,
                     void        *buf,
