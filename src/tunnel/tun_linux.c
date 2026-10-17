@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -22,7 +22,7 @@
  * ============================================================================
  *
  * Linux implementation of the TUN device interface declared
- * in tunnel/tun.h.
+ * in tunnel/tun_linux.h.
  *
  * This file uses the standard Linux TUN/TAP driver. A TUN
  * device is opened by opening /dev/net/tun and issuing the
@@ -56,20 +56,16 @@
  *
  * The MTU is set with an ioctl on an AF_INET socket. This is
  * the standard way to set the MTU of an interface that does
- * not support the SIOCSIFMTU ioctl directly (the TUN driver
- * does, but the socket route is uniform).
+ * not support the SIOCSIFMTU ioctl directly.
  *
  * Reading from a TUN device returns exactly one packet. The
  * kernel never splits a packet across two reads, and never
  * combines two packets into one read. The read buffer must be
- * large enough for the largest packet the device can carry;
- * the tunnel default is well above the largest Ethernet
- * frame, so a 65536-byte buffer is safe.
+ * large enough for the largest packet the device can carry.
  *
  * Writing to a TUN device injects one packet. The kernel
  * routes it as if it had arrived from the interface. A write
- * larger than the MTU is rejected by the kernel; the wrapper
- * checks the size first so the caller gets a clear error.
+ * larger than the MTU is rejected by the kernel.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -88,7 +84,7 @@
  *   <unistd.h>              close, read, write
  *   "bowie/types.h"         bowie_tun_t
  *   "bowie/err.h"           bowie_error_t and codes
- *   "tunnel/tun.h"          public contract
+ *   "tunnel/tun_linux.h"    public contract
  *   "tunnel/mtu.h"          MTU defaults and validation
  * ============================================================================
  */
@@ -107,7 +103,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "tunnel/tun.h"
+#include "tunnel/tun_linux.h"
 #include "tunnel/mtu.h"
 
 /*
