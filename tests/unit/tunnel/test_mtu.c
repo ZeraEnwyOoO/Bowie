@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -23,27 +23,36 @@
  *
  * Unit tests for the MTU helpers declared in tunnel/mtu.h.
  *
+ * These tests exercise the real logic of bowie_mtu_is_valid()
+ * and bowie_mtu_suggest(). Every branch of the suggestion
+ * function is covered: the normal subtraction, the small
+ * input case, the clamp to the minimum, the clamp to the
+ * maximum, and the exact boundary values.
+ *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No I/O. The MTU helpers are pure value functions.
- *   - No platform test. The constants and the helper logic are
- *     platform-independent.
+ *   - No I/O.
+ *   - No device configuration.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The suite is split into two cases:
+ * The test values are chosen to exercise each branch of the
+ * suggestion function:
  *
- *   valid      — bowie_mtu_is_valid() across boundaries
- *   suggest    — bowie_mtu_suggest() across typical and edge
- *                inputs
+ *   - normal:     1500 - 100 = 1400
+ *   - jumbo:      9000 - 100 = 8900
+ *   - small:      50 -> default (50 <= 100)
+ *   - clamp min:  1300 - 100 = 1200 -> default
+ *   - clamp max:  10000 - 100 = 9900 -> max
+ *   - exact min:  1380 - 100 = 1280
+ *   - exact max:  9100 - 100 = 9000
  *
- * Boundary values are tested explicitly. A helper that is
- * wrong exactly at a boundary is a common bug, and a boundary
- * test is cheap.
+ * Each of these is a distinct branch in the implementation.
+ * A test that covers all of them covers the function.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -68,34 +77,34 @@ START_TEST(test_mtu_is_valid_below_min)
 {
     ck_assert_int_eq(bowie_mtu_is_valid(0), 0);
     ck_assert_int_eq(bowie_mtu_is_valid(1), 0);
-    ck_assert_int_eq(bowie_mtu_is_valid(BOWIE_TUN_MTU_MIN - 1), 0);
+    ck_assert_int_eq(bowie_mtu_is_valid(1279), 0);
 }
 END_TEST
 
 START_TEST(test_mtu_is_valid_at_min)
 {
-    ck_assert_int_eq(bowie_mtu_is_valid(BOWIE_TUN_MTU_MIN), 1);
+    ck_assert_int_eq(bowie_mtu_is_valid(1280), 1);
 }
 END_TEST
 
 START_TEST(test_mtu_is_valid_mid)
 {
-    ck_assert_int_eq(bowie_mtu_is_valid(1500), 1);
     ck_assert_int_eq(bowie_mtu_is_valid(1400), 1);
-    ck_assert_int_eq(bowie_mtu_is_valid(1280), 1);
+    ck_assert_int_eq(bowie_mtu_is_valid(1500), 1);
+    ck_assert_int_eq(bowie_mtu_is_valid(4000), 1);
 }
 END_TEST
 
 START_TEST(test_mtu_is_valid_at_max)
 {
-    ck_assert_int_eq(bowie_mtu_is_valid(BOWIE_TUN_MTU_MAX), 1);
+    ck_assert_int_eq(bowie_mtu_is_valid(9000), 1);
 }
 END_TEST
 
 START_TEST(test_mtu_is_valid_above_max)
 {
-    ck_assert_int_eq(bowie_mtu_is_valid(BOWIE_TUN_MTU_MAX + 1), 0);
-    ck_assert_int_eq(bowie_mtu_is_valid(100000), 0);
+    ck_assert_int_eq(bowie_mtu_is_valid(9001), 0);
+    ck_assert_int_eq(bowie_mtu_is_valid(65535), 0);
 }
 END_TEST
 
@@ -105,22 +114,19 @@ END_TEST
  * ============================================================================
  */
 
-START_TEST(test_mtu_suggest_default)
+START_TEST(test_mtu_suggest_normal)
 {
     /*
-     * The default Ethernet MTU is 1500. Subtracting the fixed
-     * overhead (100) should give the tunnel default (1400).
+     * 1500 - 100 = 1400, the tunnel default.
      */
-    ck_assert_uint_eq(bowie_mtu_suggest(BOWIE_TUN_MTU_DEFAULT),
-                      BOWIE_TUN_MTU_TUNNEL);
+    ck_assert_uint_eq(bowie_mtu_suggest(1500), 1400);
 }
 END_TEST
 
 START_TEST(test_mtu_suggest_jumbo)
 {
     /*
-     * A jumbo frame of 9000 should give 8900, well within the
-     * accepted range.
+     * 9000 - 100 = 8900, within the accepted range.
      */
     ck_assert_uint_eq(bowie_mtu_suggest(9000), 8900);
 }
@@ -129,45 +135,53 @@ END_TEST
 START_TEST(test_mtu_suggest_small)
 {
     /*
-     * An underlying MTU that is too small after subtracting
-     * the overhead should return the safe default.
+     * 50 <= 100, so the safe default is returned.
      */
     ck_assert_uint_eq(bowie_mtu_suggest(50), BOWIE_TUN_MTU_TUNNEL);
     ck_assert_uint_eq(bowie_mtu_suggest(100), BOWIE_TUN_MTU_TUNNEL);
+    ck_assert_uint_eq(bowie_mtu_suggest(0), BOWIE_TUN_MTU_TUNNEL);
 }
 END_TEST
 
 START_TEST(test_mtu_suggest_clamp_min)
 {
     /*
-     * An underlying MTU of 1300 minus 100 is 1200, which is
-     * below the tunnel minimum. The helper returns the default.
+     * 1300 - 100 = 1200, which is below the IPv6 minimum
+     * (1280). The safe default is returned.
      */
     ck_assert_uint_eq(bowie_mtu_suggest(1300), BOWIE_TUN_MTU_TUNNEL);
+    ck_assert_uint_eq(bowie_mtu_suggest(1379), BOWIE_TUN_MTU_TUNNEL);
 }
 END_TEST
 
 START_TEST(test_mtu_suggest_clamp_max)
 {
     /*
-     * An underlying MTU of 10000 minus 100 is 9900, which is
-     * above the tunnel maximum. The helper returns the maximum.
+     * 10000 - 100 = 9900, which is above the maximum (9000).
+     * The maximum is returned.
      */
     ck_assert_uint_eq(bowie_mtu_suggest(10000), BOWIE_TUN_MTU_MAX);
+    ck_assert_uint_eq(bowie_mtu_suggest(20000), BOWIE_TUN_MTU_MAX);
 }
 END_TEST
 
-START_TEST(test_mtu_suggest_exact)
+START_TEST(test_mtu_suggest_exact_min)
 {
     /*
-     * An underlying MTU that produces exactly the minimum or
-     * the maximum should return that value, not clamp it.
+     * 1380 - 100 = 1280, exactly the minimum. The result is
+     * the minimum, not the default.
      */
-    ck_assert_uint_eq(bowie_mtu_suggest(BOWIE_TUN_MTU_MIN + 100),
-                      BOWIE_TUN_MTU_MIN);
+    ck_assert_uint_eq(bowie_mtu_suggest(1380), BOWIE_TUN_MTU_MIN);
+}
+END_TEST
 
-    ck_assert_uint_eq(bowie_mtu_suggest(BOWIE_TUN_MTU_MAX + 100),
-                      BOWIE_TUN_MTU_MAX);
+START_TEST(test_mtu_suggest_exact_max)
+{
+    /*
+     * 9100 - 100 = 9000, exactly the maximum. The result is
+     * the maximum, not the default.
+     */
+    ck_assert_uint_eq(bowie_mtu_suggest(9100), BOWIE_TUN_MTU_MAX);
 }
 END_TEST
 
@@ -194,12 +208,13 @@ static Suite *mtu_suite(void)
     suite_add_tcase(s, tc_valid);
 
     tc_suggest = tcase_create("Suggest");
-    tcase_add_test(tc_suggest, test_mtu_suggest_default);
+    tcase_add_test(tc_suggest, test_mtu_suggest_normal);
     tcase_add_test(tc_suggest, test_mtu_suggest_jumbo);
     tcase_add_test(tc_suggest, test_mtu_suggest_small);
     tcase_add_test(tc_suggest, test_mtu_suggest_clamp_min);
     tcase_add_test(tc_suggest, test_mtu_suggest_clamp_max);
-    tcase_add_test(tc_suggest, test_mtu_suggest_exact);
+    tcase_add_test(tc_suggest, test_mtu_suggest_exact_min);
+    tcase_add_test(tc_suggest, test_mtu_suggest_exact_max);
     suite_add_tcase(s, tc_suggest);
 
     return s;
