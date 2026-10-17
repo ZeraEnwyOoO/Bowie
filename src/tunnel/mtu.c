@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -23,10 +23,6 @@
  *
  * Implementation of the MTU helpers declared in tunnel/mtu.h.
  *
- * The helpers are pure value functions: they take a number and
- * return a number. They do not touch the network, the
- * filesystem, or any global state.
- *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
@@ -39,17 +35,15 @@
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The suggestion function subtracts a fixed overhead from the
- * underlying MTU. The overhead covers an IPv4 header, a UDP
- * header, and a small encryption margin. It is deliberately
- * generous: an MTU that is a little too small only costs a
- * little throughput, while an MTU that is too large causes
- * fragmentation and a much larger performance hit.
+ * The suggestion function subtracts the tunnel overhead from
+ * the underlying MTU. The overhead covers the tunnel's own
+ * headers and the encryption tag.
  *
- * The result is clamped to the accepted range. A caller that
- * passes an underlying MTU below the minimum gets the default
- * tunnel MTU, not an error: the caller asked for a
- * suggestion, and the default is the safest suggestion.
+ * The result is clamped to the accepted range. If the
+ * underlying MTU is too small to carry an IPv6 packet after
+ * the overhead is subtracted, the safe default is returned
+ * instead. A caller that wants to force a smaller MTU must
+ * set it explicitly.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -68,16 +62,17 @@
  */
 
 /*
- * The fixed overhead subtracted from the underlying MTU when
- * suggesting a tunnel MTU.
+ * The fixed overhead of the tunnel, in bytes.
  *
  * The value covers:
  *
  *   - an IPv4 header (20 bytes)
  *   - a UDP header (8 bytes)
- *   - a small encryption and framing margin (72 bytes)
+ *   - a session framing header (4 bytes)
+ *   - an AEAD tag (16 bytes)
+ *   - a small safety margin (52 bytes)
  *
- * The total is 100 bytes, which matches the difference
+ * The total is 100 bytes, which is exactly the difference
  * between BOWIE_TUN_MTU_DEFAULT and BOWIE_TUN_MTU_TUNNEL.
  */
 #define BOWIE_MTU_OVERHEAD  100u
@@ -93,11 +88,9 @@ int bowie_mtu_is_valid(size_t mtu)
     if (mtu < BOWIE_TUN_MTU_MIN) {
         return 0;
     }
-
     if (mtu > BOWIE_TUN_MTU_MAX) {
         return 0;
     }
-
     return 1;
 }
 
@@ -105,12 +98,23 @@ size_t bowie_mtu_suggest(size_t underlying_mtu)
 {
     size_t suggested;
 
+    /*
+     * If the underlying MTU is too small to even subtract the
+     * overhead, return the safe default. Returning a number
+     * smaller than the IPv6 minimum would produce a tunnel
+     * that cannot carry IPv6 at all.
+     */
     if (underlying_mtu <= BOWIE_MTU_OVERHEAD) {
         return BOWIE_TUN_MTU_TUNNEL;
     }
 
     suggested = underlying_mtu - BOWIE_MTU_OVERHEAD;
 
+    /*
+     * The result must fit the accepted range. A value below
+     * the IPv6 minimum is raised to the safe default; a value
+     * above the maximum is lowered to the maximum.
+     */
     if (suggested < BOWIE_TUN_MTU_MIN) {
         return BOWIE_TUN_MTU_TUNNEL;
     }
