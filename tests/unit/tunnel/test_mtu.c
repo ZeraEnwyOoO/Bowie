@@ -51,9 +51,6 @@
  *   - exact min:  1380 - 100 = 1280
  *   - exact max:  9100 - 100 = 9000
  *
- * Each of these is a distinct branch in the implementation.
- * A test that covers all of them covers the function.
- *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
