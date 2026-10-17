@@ -18,33 +18,33 @@
 
 /*
  * ============================================================================
- * BOWIE — SECURITY: KEYPAIR
+ * BOWIE — SECURITY: SIGN
  * ============================================================================
  *
- * X25519 key agreement for the security layer.
+ * Ed25519 signatures for the security layer.
  *
- * This header declares the X25519 key agreement functions and
- * types the security layer uses. It is independent of
- * crypto/keypair.h.
+ * This header declares the signing functions and types the
+ * security layer uses. It is independent of crypto/sign.h.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No Ed25519. Signing is in security/sign.h.
+ *   - No key generation. The caller generates the keypair.
  *   - No encryption. Symmetric encryption is in security/session.h.
- *   - No key storage.
+ *   - No certificate parsing.
+ *   - No streaming API.
  *   - No allocation.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * X25519 keys are 32 bytes. A public key is 32 bytes; a
- * private key is 32 bytes; the shared secret is 32 bytes.
+ * The private key is 64 bytes (seed || public) in the form
+ * OpenSSL expects. The first 32 bytes are the seed, the second
+ * 32 bytes are the public key.
  *
- * The shared secret is not a symmetric key. It must be passed
- * through a KDF (HKDF-SHA256, as in security/session.c).
+ * The signature is 64 bytes.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -52,13 +52,13 @@
  *
  *   <stdint.h>              uint8_t
  *   <stddef.h>              size_t
- *   "bowie/types.h"         (no keypair types are declared there)
+ *   "bowie/types.h"         (no sign types are declared there)
  *   "bowie/err.h"           bowie_error_t
  * ============================================================================
  */
 
-#ifndef BOWIE_SECURITY_KEYPAIR_H
-#define BOWIE_SECURITY_KEYPAIR_H
+#ifndef BOWIE_SECURITY_SIGN_H
+#define BOWIE_SECURITY_SIGN_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -75,50 +75,45 @@ extern "C" {
  * TYPES
  * ============================================================================
  *
- * Fixed-size value types. A key or a shared secret can be
- * copied and compared without allocation.
+ * Fixed-size value types. A key or a signature can be copied
+ * and compared without allocation.
  */
 
-#define BOWIE_KEYPAIR_PUBLIC_LEN  32
-#define BOWIE_KEYPAIR_PRIVATE_LEN 32
-#define BOWIE_KEYPAIR_SHARED_LEN  32
+#define BOWIE_SIGN_PUBLIC_LEN    32
+#define BOWIE_SIGN_PRIVATE_LEN   64
+#define BOWIE_SIGN_SIGNATURE_LEN 64
 
-typedef struct bowie_keypair_public {
-    uint8_t bytes[BOWIE_KEYPAIR_PUBLIC_LEN];
-} bowie_keypair_public_t;
+typedef struct bowie_sign_public {
+    uint8_t bytes[BOWIE_SIGN_PUBLIC_LEN];
+} bowie_sign_public_t;
 
-typedef struct bowie_keypair_private {
-    uint8_t bytes[BOWIE_KEYPAIR_PRIVATE_LEN];
-} bowie_keypair_private_t;
+typedef struct bowie_sign_private {
+    uint8_t bytes[BOWIE_SIGN_PRIVATE_LEN];
+} bowie_sign_private_t;
 
-typedef struct bowie_keypair_shared {
-    uint8_t bytes[BOWIE_KEYPAIR_SHARED_LEN];
-} bowie_keypair_shared_t;
+typedef struct bowie_sign_signature {
+    uint8_t bytes[BOWIE_SIGN_SIGNATURE_LEN];
+} bowie_sign_signature_t;
 
 /*
  * ============================================================================
- * GENERATION
+ * SIGN
  * ============================================================================
  */
 
-bowie_error_t bowie_security_keypair_generate(
-    bowie_keypair_public_t *out_public,
-    bowie_keypair_private_t *out_private);
+bowie_error_t bowie_security_sign(
+    const bowie_sign_private_t *private_key,
+    const void *msg, size_t msg_len,
+    bowie_sign_signature_t *out);
+
+bowie_error_t bowie_security_verify(
+    const bowie_sign_public_t *public_key,
+    const void *msg, size_t msg_len,
+    const bowie_sign_signature_t *signature);
 
 /*
  * ============================================================================
- * AGREEMENT
- * ============================================================================
- */
-
-bowie_error_t bowie_security_keypair_shared(
-    const bowie_keypair_private_t *local_private,
-    const bowie_keypair_public_t *remote_public,
-    bowie_keypair_shared_t *out);
-
-/*
- * ============================================================================
- * END OF SECURITY KEYPAIR
+ * END OF SECURITY SIGN
  * ============================================================================
  */
 
@@ -126,4 +121,4 @@ bowie_error_t bowie_security_keypair_shared(
 }
 #endif
 
-#endif /* BOWIE_SECURITY_KEYPAIR_H */
+#endif /* BOWIE_SECURITY_SIGN_H */
