@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -32,8 +32,7 @@
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No signature verification. The signature bytes are
- *     treated as opaque; this file does not check them.
+ *   - No signature verification.
  *   - No I/O.
  *   - No allocation.
  *
