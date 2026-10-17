@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -18,159 +18,191 @@
 
 /*
  * ============================================================================
- * BOWIE — TUNNEL MTU
+ * BOWIE — TUNNEL MTU UNIT TESTS
  * ============================================================================
  *
- * Maximum Transmission Unit (MTU) constants and helpers for
- * the Bowie tunnel.
+ * Unit tests for the MTU helpers declared in tunnel/mtu.h.
  *
- * The MTU is the largest packet that can be sent over an
- * interface without fragmentation. The tunnel reduces the
- * usable MTU because it adds its own headers and encryption
- * overhead to every packet.
- *
- * This header defines the constants and a small validation
- * function. It does not configure the TUN device; that is a
- * platform concern handled in tun.h.
+ * These tests exercise the real logic: the suggestion function
+ * must subtract the overhead, clamp to the minimum, clamp to
+ * the maximum, and return the safe default for degenerate
+ * inputs.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No I/O. Nothing here opens a device or sends a packet.
- *   - No configuration. The MTU is set on the TUN device by
- *     the platform backend, not by this header.
- *   - No fragmentation. Fragmentation, if needed, is a
- *     platform or protocol concern. This header only defines
- *     the values.
+ *   - No I/O.
+ *   - No device configuration.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The default Ethernet MTU is 1500 bytes. The tunnel must
- * subtract the overhead of its own headers and encryption so
- * that the resulting packet still fits in the underlying
- * transport's MTU.
+ * The test values are chosen to exercise each branch of the
+ * suggestion function:
  *
- * The overhead depends on the layers above the tunnel:
- *
- *   - IPv4 or IPv6 header (20 or 40 bytes)
- *   - UDP header (8 bytes)
- *   - ICE/Session framing and encryption (variable)
- *
- * To avoid fragmentation on the most common path, the tunnel
- * MTU is set to 1400 bytes. This leaves 100 bytes of headroom
- * for headers and encryption, which is enough for IPv4 and
- * most encryption schemes.
- *
- * The absolute minimum MTU for IPv6 is 1280 bytes. Any
- * interface with an MTU below that cannot carry IPv6 traffic
- * without fragmentation. The tunnel MTU must never be set
- * below this value if IPv6 is to be supported.
+ *   - normal: 1500 - 100 = 1400
+ *   - jumbo: 9000 - 100 = 8900
+ *   - small: 50 -> default
+ *   - clamp min: 1300 - 100 = 1200 -> default
+ *   - clamp max: 10000 - 100 = 9900 -> max
+ *   - exact min: 1380 - 100 = 1280
+ *   - exact max: 9100 - 100 = 9000
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <stddef.h>      size_t
+ *   <check.h>           test framework
+ *   "tunnel/mtu.h"      constants and declarations
  * ============================================================================
  */
 
-#ifndef BOWIE_TUNNEL_MTU_H
-#define BOWIE_TUNNEL_MTU_H
+#include <check.h>
 
-#include <stddef.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "tunnel/mtu.h"
 
 /*
  * ============================================================================
- * CONSTANTS
+ * VALID
  * ============================================================================
  */
 
-/*
- * The default MTU of an Ethernet interface.
- *
- * This is the value the operating system assigns to a new
- * TUN or TAP device unless the caller overrides it.
- */
-#define BOWIE_TUN_MTU_DEFAULT  1500
-
-/*
- * The MTU the tunnel sets on its TUN device.
- *
- * It is 100 bytes smaller than the Ethernet default, which
- * leaves room for the tunnel's own headers and encryption
- * without forcing fragmentation on the underlying link.
- */
-#define BOWIE_TUN_MTU_TUNNEL   1400
-
-/*
- * The minimum MTU an IPv6-capable interface must support.
- *
- * Any interface with an MTU below this value cannot carry
- * IPv6 packets without fragmentation. The tunnel must not be
- * configured below this value if IPv6 is to work.
- */
-#define BOWIE_TUN_MTU_MIN_IPV6 1280
-
-/*
- * The minimum MTU the tunnel accepts.
- *
- * It matches the IPv6 minimum. A caller that wants to use an
- * even smaller MTU must know that IPv6 will not work through
- * the tunnel.
- */
-#define BOWIE_TUN_MTU_MIN      BOWIE_TUN_MTU_MIN_IPV6
-
-/*
- * The maximum MTU the tunnel accepts.
- *
- * It is the jumbo frame maximum minus a small margin. A caller
- * that wants to use an even larger MTU must know that the
- * underlying link may not support it.
- */
-#define BOWIE_TUN_MTU_MAX      9000
-
-/*
- * ============================================================================
- * HELPERS
- * ============================================================================
- */
-
-/*
- * True when the MTU is within the range the tunnel accepts.
- *
- * The range is BOWIE_TUN_MTU_MIN to BOWIE_TUN_MTU_MAX,
- * inclusive. A value outside the range is rejected.
- */
-int bowie_mtu_is_valid(size_t mtu);
-
-/*
- * Suggest an MTU for the tunnel given the underlying MTU.
- *
- * The suggestion is the underlying MTU minus the tunnel
- * overhead, clamped to the accepted range. A caller that
- * knows the underlying link's MTU can use this to pick a
- * tunnel MTU that avoids fragmentation.
- *
- * Passing zero or a value below the tunnel minimum returns
- * BOWIE_TUN_MTU_TUNNEL, which is the safe default.
- */
-size_t bowie_mtu_suggest(size_t underlying_mtu);
-
-/*
- * ============================================================================
- * END OF TUNNEL MTU
- * ============================================================================
- */
-
-#ifdef __cplusplus
+START_TEST(test_mtu_is_valid_below_min)
+{
+    ck_assert_int_eq(bowie_mtu_is_valid(0), 0);
+    ck_assert_int_eq(bowie_mtu_is_valid(1279), 0);
 }
-#endif
+END_TEST
 
-#endif /* BOWIE_TUNNEL_MTU_H */
+START_TEST(test_mtu_is_valid_at_min)
+{
+    ck_assert_int_eq(bowie_mtu_is_valid(1280), 1);
+}
+END_TEST
+
+START_TEST(test_mtu_is_valid_mid)
+{
+    ck_assert_int_eq(bowie_mtu_is_valid(1400), 1);
+    ck_assert_int_eq(bowie_mtu_is_valid(1500), 1);
+}
+END_TEST
+
+START_TEST(test_mtu_is_valid_at_max)
+{
+    ck_assert_int_eq(bowie_mtu_is_valid(9000), 1);
+}
+END_TEST
+
+START_TEST(test_mtu_is_valid_above_max)
+{
+    ck_assert_int_eq(bowie_mtu_is_valid(9001), 0);
+}
+END_TEST
+
+/*
+ * ============================================================================
+ * SUGGEST
+ * ============================================================================
+ */
+
+START_TEST(test_mtu_suggest_normal)
+{
+    ck_assert_uint_eq(bowie_mtu_suggest(1500), 1400);
+}
+END_TEST
+
+START_TEST(test_mtu_suggest_jumbo)
+{
+    ck_assert_uint_eq(bowie_mtu_suggest(9000), 8900);
+}
+END_TEST
+
+START_TEST(test_mtu_suggest_small)
+{
+    /* 50 <= overhead (100), so the default is returned. */
+    ck_assert_uint_eq(bowie_mtu_suggest(50), BOWIE_TUN_MTU_TUNNEL);
+}
+END_TEST
+
+START_TEST(test_mtu_suggest_clamp_min)
+{
+    /* 1300 - 100 = 1200 < 1280, so the default is returned. */
+    ck_assert_uint_eq(bowie_mtu_suggest(1300), BOWIE_TUN_MTU_TUNNEL);
+}
+END_TEST
+
+START_TEST(test_mtu_suggest_clamp_max)
+{
+    /* 10000 - 100 = 9900 > 9000, so the maximum is returned. */
+    ck_assert_uint_eq(bowie_mtu_suggest(10000), BOWIE_TUN_MTU_MAX);
+}
+END_TEST
+
+START_TEST(test_mtu_suggest_exact_min)
+{
+    /* 1380 - 100 = 1280, which is exactly the minimum. */
+    ck_assert_uint_eq(bowie_mtu_suggest(1380), BOWIE_TUN_MTU_MIN);
+}
+END_TEST
+
+START_TEST(test_mtu_suggest_exact_max)
+{
+    /* 9100 - 100 = 9000, which is exactly the maximum. */
+    ck_assert_uint_eq(bowie_mtu_suggest(9100), BOWIE_TUN_MTU_MAX);
+}
+END_TEST
+
+/*
+ * ============================================================================
+ * SUITE
+ * ============================================================================
+ */
+
+static Suite *mtu_suite(void)
+{
+    Suite *s;
+    TCase *tc_valid;
+    TCase *tc_suggest;
+
+    s = suite_create("TunnelMtu");
+
+    tc_valid = tcase_create("Valid");
+    tcase_add_test(tc_valid, test_mtu_is_valid_below_min);
+    tcase_add_test(tc_valid, test_mtu_is_valid_at_min);
+    tcase_add_test(tc_valid, test_mtu_is_valid_mid);
+    tcase_add_test(tc_valid, test_mtu_is_valid_at_max);
+    tcase_add_test(tc_valid, test_mtu_is_valid_above_max);
+    suite_add_tcase(s, tc_valid);
+
+    tc_suggest = tcase_create("Suggest");
+    tcase_add_test(tc_suggest, test_mtu_suggest_normal);
+    tcase_add_test(tc_suggest, test_mtu_suggest_jumbo);
+    tcase_add_test(tc_suggest, test_mtu_suggest_small);
+    tcase_add_test(tc_suggest, test_mtu_suggest_clamp_min);
+    tcase_add_test(tc_suggest, test_mtu_suggest_clamp_max);
+    tcase_add_test(tc_suggest, test_mtu_suggest_exact_min);
+    tcase_add_test(tc_suggest, test_mtu_suggest_exact_max);
+    suite_add_tcase(s, tc_suggest);
+
+    return s;
+}
+
+int main(void)
+{
+    Suite   *s;
+    SRunner *sr;
+    int      failed;
+
+    s  = mtu_suite();
+    sr = srunner_create(s);
+
+    srunner_run_all(sr, CK_NORMAL);
+
+    failed = srunner_ntests_failed(sr);
+
+    srunner_free(sr);
+
+    return (failed == 0) ? 0 : 1;
+}
