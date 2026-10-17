@@ -27,6 +27,7 @@
 #   LDFLAGS      linker flags
 #   LDLIBS       libraries to link
 #   NAT_BACKEND  NAT backend to build (libjuice only in v1)
+#   TUNNEL_BACKEND Tunnel backend to build (linux / android)
 #   PLATFORM     platform backend (linux / android)
 #   V            verbose (V=1 to show full compile commands)
 #
@@ -113,6 +114,29 @@ NAT_SRCS := src/nat/nat_libjuice.c
 NAT_LIBS := -ljuice
 else
 $(error Unknown NAT_BACKEND: $(NAT_BACKEND). Use libjuice.)
+endif
+
+# ----------------------------------------------------------------------------
+# Tunnel backend selection
+# ----------------------------------------------------------------------------
+#
+# The Tunnel layer creates a virtual network interface (TUN).
+# The interface is platform-specific.
+#
+# The core Tunnel code (src/tunnel/mtu.c, src/tunnel/packet.c)
+# is always built. It is platform-independent.
+#
+#   linux     Uses /dev/net/tun and ioctl (default).
+#   android   Uses VpnService (deferred to Phase 12).
+
+TUNNEL_BACKEND ?= linux
+
+ifeq ($(TUNNEL_BACKEND),linux)
+TUNNEL_SRCS := src/tunnel/tun_linux.c
+else ifeq ($(TUNNEL_BACKEND),android)
+$(error TUNNEL_BACKEND=android is not implemented yet. Use linux.)
+else
+$(error Unknown TUNNEL_BACKEND: $(TUNNEL_BACKEND). Use linux.)
 endif
 
 # ----------------------------------------------------------------------------
@@ -208,8 +232,11 @@ LIB_SRCS := \
     src/proto/framing.c \
     src/proto/handshake.c \
     src/nat/nat.c \
+    src/tunnel/mtu.c \
+    src/tunnel/packet.c \
     $(PLATFORM_SRCS) \
-    $(NAT_SRCS)
+    $(NAT_SRCS) \
+    $(TUNNEL_SRCS)
 
 # Library objects. The path is rewritten so that the object tree
 # mirrors the source tree under build/obj/.
@@ -259,7 +286,10 @@ UNIT_TEST_SRCS := \
     tests/unit/proto/test_message.c \
     tests/unit/proto/test_framing.c \
     tests/unit/proto/test_handshake.c \
-    tests/unit/nat/test_nat.c
+    tests/unit/nat/test_nat.c \
+    tests/unit/tunnel/test_mtu.c \
+    tests/unit/tunnel/test_packet.c \
+    tests/unit/tunnel/test_tun_linux.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
@@ -354,10 +384,11 @@ help:
 	@echo
 	@echo "Variables:"
 	@echo
-	@echo "  CC           C compiler (default: cc)"
-	@echo "  PLATFORM     platform backend (linux / android)"
-	@echo "  NAT_BACKEND  NAT backend (libjuice)"
-	@echo "  V            set V=1 for verbose output"
+	@echo "  CC             C compiler (default: cc)"
+	@echo "  PLATFORM       platform backend (linux / android)"
+	@echo "  NAT_BACKEND    NAT backend (libjuice)"
+	@echo "  TUNNEL_BACKEND Tunnel backend (linux)"
+	@echo "  V              set V=1 for verbose output"
 	@echo
 	@echo "Examples:"
 	@echo
