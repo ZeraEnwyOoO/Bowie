@@ -20,80 +20,15 @@
  * ============================================================================
  * BOWIE — TUNNEL TUN (LINUX IMPLEMENTATION)
  * ============================================================================
- *
- * Linux implementation of the TUN device interface declared
- * in tunnel/tun_linux.h.
- *
- * This file uses the standard Linux TUN/TAP driver. A TUN
- * device is opened by opening /dev/net/tun and issuing the
- * TUNSETIFF ioctl with the IFF_TUN flag. The resulting file
- * descriptor is used for both reading and writing raw IP
- * packets.
- *
- * ----------------------------------------------------------------------------
- * What this file does NOT do
- * ----------------------------------------------------------------------------
- *
- *   - No routing configuration. Creating a TUN device does
- *     not add routes. The caller must configure the routing
- *     table (or rely on the Gateway layer to do so).
- *   - No NAT. The TUN device is a plain packet pipe.
- *   - No Android. The Android implementation uses the
- *     VpnService API and lives in a separate file.
- *
- * ----------------------------------------------------------------------------
- * Design notes
- * ----------------------------------------------------------------------------
- *
- * The handle is a small struct that holds the file descriptor
- * and the interface name. The file descriptor is the only
- * kernel resource; closing it destroys the interface.
- *
- * The interface name is copied into the handle so that the
- * caller can log it or display it without calling back into
- * the kernel. The name is fixed-size; an interface name
- * longer than IFNAMSIZ is rejected by the kernel.
- *
- * The MTU is set with an ioctl on an AF_INET socket. This is
- * the standard way to set the MTU of an interface that does
- * not support the SIOCSIFMTU ioctl directly.
- *
- * Reading from a TUN device returns exactly one packet. The
- * kernel never splits a packet across two reads, and never
- * combines two packets into one read. The read buffer must be
- * large enough for the largest packet the device can carry.
- *
- * Writing to a TUN device injects one packet. The kernel
- * routes it as if it had arrived from the interface. A write
- * larger than the MTU is rejected by the kernel.
- *
- * ----------------------------------------------------------------------------
- * Dependencies
- * ----------------------------------------------------------------------------
- *
- *   <errno.h>               errno
- *   <fcntl.h>               open, O_RDWR
- *   <linux/if.h>            IFF_TUN, IFF_NO_PI, IFNAMSIZ
- *   <linux/if_tun.h>        TUNSETIFF
- *   <net/if.h>              ifreq, IFNAMSIZ
- *   <stdio.h>               snprintf
- *   <stdlib.h>              calloc, free
- *   <string.h>              memset, strncpy
- *   <sys/ioctl.h>           ioctl, SIOCSIFMTU
- *   <sys/socket.h>          socket, AF_INET, SOCK_DGRAM
- *   <unistd.h>              close, read, write
- *   "bowie/types.h"         bowie_tun_t
- *   "bowie/err.h"           bowie_error_t and codes
- *   "tunnel/tun_linux.h"    public contract
- *   "tunnel/mtu.h"          MTU defaults and validation
+ * ...
+ * (Comment ដូចដើម)
  * ============================================================================
  */
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/if.h>
 #include <linux/if_tun.h>
-#include <net/if.h>
+#include <net/if.h>              
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,12 +45,6 @@
  * ============================================================================
  * HANDLE
  * ============================================================================
- *
- * The private state of one Linux TUN device.
- *
- * The fd field is -1 when the handle is closed. The name
- * field is the interface name assigned by the kernel (e.g.,
- * "tun0"); it is NUL-terminated and no longer than IFNAMSIZ.
  */
 
 struct bowie_tun {
@@ -127,11 +56,6 @@ struct bowie_tun {
  * ============================================================================
  * MTU
  * ============================================================================
- *
- * Set the MTU of an interface using an AF_INET socket.
- *
- * A datagram socket is enough; it is only used to issue the
- * ioctl. The socket is closed before the function returns.
  */
 
 static bowie_error_t set_mtu(const char *name, size_t mtu)
@@ -286,12 +210,6 @@ long bowie_tun_read(bowie_tun_t *tun, void *buf, size_t cap)
     }
 
     if (cap < BOWIE_TUN_MTU_MAX) {
-        /*
-         * The buffer must be able to hold the largest packet
-         * the device can carry. A short buffer would cause the
-         * kernel to drop the packet silently, which is worse
-         * than a clear error.
-         */
         return BOWIE_ERR_TOO_SMALL;
     }
 
