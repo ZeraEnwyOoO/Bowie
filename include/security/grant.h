@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -58,8 +58,8 @@
  * The signature covers the canonical serialization of the
  * grant fields. A verifier serializes the fields in the same
  * order and verifies the signature against the issuer's public
- * key. The serialization format is defined by the crypto and
- * protocol layers, not by this header.
+ * key. The serialization format is defined by the protocol
+ * layer, not by this header.
  *
  * The subject field is the peer ID of the receiving peer. The
  * issuer field is the public ID of the owner. Both are fixed
@@ -144,22 +144,22 @@ void bowie_grant_clear(bowie_grant_t *grant);
 
 /*
  * ============================================================================
- * SIGN
+ * SERIALIZATION
  * ============================================================================
  *
- * The sign function is declared in crypto/sign.h, not here.
- * The grant module provides a canonical-serialization helper
- * that the sign function uses, so that a grant is signed over
- * exactly the bytes a verifier will recompute.
+ * The grant is serialized for signing and verification. The
+ * serialization is deterministic: the same grant always
+ * produces the same bytes. The format is defined by the
+ * protocol layer, not by this header.
  */
 
 /*
  * Serialize the grant fields (without the signature) into a
  * caller-supplied buffer.
  *
- * The serialization is deterministic: the same grant always
- * produces the same bytes. The format is defined by the
- * protocol layer, not by this header.
+ * The serialization covers the fields in the order they appear
+ * in the struct: subject, issuer, grant_id, permissions,
+ * issued_at, expires_at.
  *
  * Returns the number of bytes written.
  * Returns BOWIE_ERR_NULL_ARG if grant or buf is NULL.
@@ -180,12 +180,12 @@ size_t bowie_grant_serialized_len(const bowie_grant_t *grant);
 
 /*
  * ============================================================================
- * VERIFY
+ * VALIDATION
  * ============================================================================
  *
- * The verify function is declared in crypto/sign.h. This
- * header provides the validity helpers a verifier uses after
- * the signature has been checked.
+ * Helpers that a verifier uses after the signature has been
+ * checked. They do not verify the signature themselves; that
+ * is done by the crypto/sign module.
  */
 
 /*
