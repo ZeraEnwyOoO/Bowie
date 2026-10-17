@@ -234,6 +234,11 @@ LIB_SRCS := \
     src/nat/nat.c \
     src/tunnel/mtu.c \
     src/tunnel/packet.c \
+    src/security/grant.c \
+    src/security/ownership.c \
+    src/security/revoke.c \
+    src/security/session.c \
+    src/security/permission.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS) \
     $(TUNNEL_SRCS)
@@ -289,7 +294,12 @@ UNIT_TEST_SRCS := \
     tests/unit/nat/test_nat.c \
     tests/unit/tunnel/test_mtu.c \
     tests/unit/tunnel/test_packet.c \
-    tests/unit/tunnel/test_tun_linux.c
+    tests/unit/tunnel/test_tun_linux.c \
+    tests/unit/security/test_grant.c \
+    tests/unit/security/test_ownership.c \
+    tests/unit/security/test_revoke.c \
+    tests/unit/security/test_session.c \
+    tests/unit/security/test_permission.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
