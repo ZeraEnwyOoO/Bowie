@@ -25,16 +25,16 @@
  * security/ownership.h.
  *
  * The verification is a thin wrapper around the Ed25519
- * signature verification in crypto/sign.h. This file does not
- * implement the signature check itself; it validates the
- * arguments, calls the crypto layer, and maps the result.
+ * signature verification in security/sign.h. This file does
+ * not implement the signature check itself; it validates the
+ * arguments, calls the security layer, and maps the result.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
  *   - No signature algorithm. Ed25519 is implemented by
- *     OpenSSL and wrapped by crypto/sign.c.
+ *     OpenSSL and wrapped by security/sign.c.
  *   - No challenge generation. The caller supplies the
  *     challenge.
  *   - No I/O.
@@ -43,12 +43,12 @@
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The public ID is the raw Ed25519 public key. The crypto
+ * The public ID is the raw Ed25519 public key. The security
  * layer expects a bowie_sign_public_t struct; the conversion
  * between the raw bytes and that format is handled by
- * crypto/sign.h, not here.
+ * security/sign.h, not here.
  *
- * A zero-length challenge is rejected before the crypto
+ * A zero-length challenge is rejected before the security
  * layer is called. A zero-length challenge would produce a
  * signature over nothing, which is meaningless as a proof.
  *
@@ -62,7 +62,7 @@
  *   <string.h>              memcpy
  *   "bowie/types.h"         bowie_span_t, bowie_public_id_t
  *   "bowie/err.h"           bowie_error_t and codes
- *   "crypto/sign.h"         bowie_sign_ed25519_verify()
+ *   "security/sign.h"       bowie_security_verify()
  *   "security/ownership.h"  declarations
  * ============================================================================
  */
@@ -71,7 +71,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "crypto/sign.h"
+#include "security/sign.h"        /* ← ប្តូរមកប្រើ security/sign.h */
 #include "security/ownership.h"
 
 /*
@@ -109,20 +109,20 @@ bowie_error_t bowie_ownership_verify(const bowie_public_id_t *public_id,
     }
 
     /*
-     * Convert the raw public ID bytes into the crypto layer's
-     * public key struct.
+     * Convert the raw public ID bytes into the security
+     * layer's public key struct.
      */
     memcpy(pub_key.bytes, public_id->bytes, BOWIE_SIGN_PUBLIC_LEN);
     memcpy(sig.bytes, signature.data, BOWIE_SIGN_SIGNATURE_LEN);
 
     /*
-     * The signature verification is delegated to the crypto
+     * The signature verification is delegated to the security
      * layer.
      */
-    rc = bowie_sign_ed25519_verify(&pub_key,
-                                    challenge.data,
-                                    challenge.len,
-                                    &sig);
+    rc = bowie_security_verify(&pub_key,
+                                challenge.data,
+                                challenge.len,
+                                &sig);
 
     if (rc != BOWIE_OK) {
         return BOWIE_ERR_SIGN_INVALID;
