@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -63,6 +63,11 @@
  * that wants to forward exactly the declared length must do
  * the comparison itself, because a truncated packet and a
  * packet with trailing padding are both possible.
+ *
+ * The checksum function verifies the IPv4 header checksum
+ * only. IPv6 does not have a header checksum; its integrity
+ * is provided by the transport layer or by the crypto layer
+ * above the tunnel.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -226,6 +231,33 @@ int bowie_packet_is_protocol(bowie_span_t packet, uint8_t protocol);
  * field or the version is not recognized.
  */
 uint16_t bowie_packet_length(bowie_span_t packet);
+
+/*
+ * ============================================================================
+ * CHECKSUM
+ * ============================================================================
+ *
+ * IPv4 has a header checksum; IPv6 does not. The checksum
+ * function computes the IPv4 checksum and compares it against
+ * the value in the header. For IPv6 it always returns 1,
+ * because there is nothing to verify.
+ */
+
+/*
+ * True when the packet's own header checksum is valid.
+ *
+ * For IPv4, the function computes the standard one's
+ * complement sum over the header and compares it to the
+ * checksum field in the header. The function returns 1 when
+ * the header checksum is correct.
+ *
+ * For IPv6, the function returns 1. IPv6 has no header
+ * checksum; the integrity of the packet is provided by the
+ * transport layer or by the crypto layer above the tunnel.
+ *
+ * For any other version, the function returns 0.
+ */
+int bowie_packet_checksum_valid(bowie_span_t packet);
 
 /*
  * ============================================================================
