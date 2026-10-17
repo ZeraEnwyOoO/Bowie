@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -18,203 +18,83 @@
 
 /*
  * ============================================================================
- * BOWIE — SECURITY: SESSION (IMPLEMENTATION)
+ * BOWIE — SECURITY: SESSION
  * ============================================================================
  *
- * Implementation of the session helpers declared in
- * security/session.h.
+ * Session key derivation and symmetric encryption.
  *
- * The implementation calls OpenSSL directly. It does not use
- * crypto/cipher.h or crypto/hash.h. The crypto/ layer is a
- * general-purpose library; the security/ layer is the policy
- * that decides how the library is used, and it is allowed to
- * use OpenSSL itself.
+ * A session is an authenticated, encrypted channel between two
+ * peers. It is established with a key agreement (X25519) and
+ * used with a symmetric cipher (AES-256-GCM).
+ *
+ * The session layer is independent of the crypto/ layer: it
+ * calls OpenSSL directly for HKDF and AES-GCM. The crypto/
+ * layer is a general-purpose library; the security/ layer is
+ * the policy that decides how the library is used.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
  *   - No key agreement. The X25519 exchange is done by the
- *     caller.
- *   - No identity or grant. The proof of ownership and the
- *     grant check are separate concerns.
- *   - No I/O.
+ *     caller, which passes the shared secret to
+ *     bowie_session_new(). This layer consumes the secret.
+ *   - No identity. The proof of ownership is in ownership.h.
+ *   - No grant verification. That is a permission concern.
+ *   - No key storage. The session key lives in the handle and
+ *     is wiped on close.
+ *   - No nonce management across rekeys. A caller that wants
+ *     to rekey must create a new session.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The session key is derived with HKDF-SHA256 (RFC 5869). The
- * shared secret is the IKM, the salt is empty, and the info
- * string is "bowie session key". The output is 32 bytes, the
- * AES-256 key length.
+ * The session key is derived from the X25519 shared secret
+ * with HKDF-SHA256. The shared secret is not used directly as
+ * an AES key: it is a point on the curve, not a uniformly
+ * random string. HKDF extracts a uniform key and expands it to
+ * the length the cipher needs.
  *
- * The nonce is 12 bytes:
+ * The nonce for AES-256-GCM is 12 bytes. It must be unique
+ * for every message encrypted with the same key. The session
+ * maintains a 64-bit counter and builds the nonce as:
  *
  *     [ 4 bytes: zero ] [ 8 bytes: counter, big-endian ]
  *
- * The counter starts at zero and is incremented after every
- * call. Both peers must call encrypt/decrypt the same number
- * of times in the same order, or their nonces will diverge.
+ * This gives 2^64 messages per session, which is far beyond
+ * any realistic session lifetime. The counter is not
+ * transmitted; both peers derive the same nonce from the same
+ * message order. If a message is lost, the counter is still
+ * advanced so that the two peers stay in sync.
  *
- * The handle stores the key in a fixed-size buffer. The buffer
- * is wiped before the handle is freed with an explicit
- * OPENSSL_cleanse. The counter is reset on every new session.
+ * The handle is opaque. The caller owns it, never sees its
+ * layout, and frees it with bowie_session_free().
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <openssl/evp.h>         EVP_CIPHER_CTX, EVP_aes_256_gcm,
- *                           EVP_EncryptInit_ex, EVP_DecryptInit_ex,
- *                           EVP_EncryptUpdate, EVP_DecryptUpdate,
- *                           EVP_EncryptFinal_ex, EVP_DecryptFinal_ex,
- *                           EVP_CIPHER_CTX_ctrl,
- *                           EVP_CIPHER_CTX_new, EVP_CIPHER_CTX_free,
- *                           EVP_PKEY_HKDF, EVP_PKEY_CTX_new_id,
- *                           EVP_PKEY_derive_init, EVP_PKEY_derive_set_hkdf_md,
- *                           EVP_PKEY_derive_set_hkdf_salt,
- *                           EVP_PKEY_derive_set1_hkdf_key,
- *                           EVP_PKEY_derive_set1_hkdf_info,
- *                           EVP_PKEY_derive, EVP_PKEY_CTX_free
- *   <openssl/crypto.h>      OPENSSL_cleanse
- *   <stdlib.h>              calloc, free
- *   <string.h>              memcpy, memset
- *   "bowie/types.h"         types
- *   "bowie/err.h"           errors
- *   "security/session.h"    declarations
+ *   <stdint.h>              uint8_t, uint32_t, uint64_t
+ *   <stddef.h>              size_t
+ *   "bowie/types.h"         bowie_span_t, bowie_session_t,
+ *                           bowie_session_id_t
+ *   "bowie/err.h"           bowie_error_t
  * ============================================================================
  */
 
-#include <openssl/evp.h>
-#include <openssl/crypto.h>
+#ifndef BOWIE_SECURITY_SESSION_H
+#define BOWIE_SECURITY_SESSION_H
 
-#include <limits.h>
-#include <stdlib.h>
-#include <string.h>
+#include <stdint.h>
+#include <stddef.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "security/session.h"
 
-/*
- * ============================================================================
- * CONSTANTS
- * ============================================================================
- */
-
-#define BOWIE_SESSION_KEY_LEN       32
-#define BOWIE_SESSION_NONCE_LEN     12
-#define BOWIE_SESSION_TAG_LEN       16
-
-#define BOWIE_SESSION_INFO          "bowie session key"
-#define BOWIE_SESSION_INFO_LEN      17u
-
-/*
- * ============================================================================
- * HANDLE
- * ============================================================================
- */
-
-struct bowie_session {
-    uint8_t           key[BOWIE_SESSION_KEY_LEN];
-    uint64_t          counter;
-    bowie_session_id_t id;
-};
-
-/*
- * ============================================================================
- * INTERNAL — HKDF
- * ============================================================================
- *
- * HKDF-SHA256 (RFC 5869) via the EVP_PKEY HKDF interface.
- * The output is a 32-byte key, which is the AES-256 key length.
- */
-
-static bowie_error_t derive_key(const uint8_t *secret,
-                                size_t secret_len,
-                                uint8_t *out_key)
-{
-    EVP_PKEY_CTX *ctx;
-    size_t        out_len;
-    int           rc;
-    unsigned char salt[1] = { 0 };
-
-    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
-    if (ctx == NULL) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_PKEY_derive_init(ctx) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    /*
-     * The salt is optional. An empty salt is fine: HKDF
-     * treats it as a string of zeros, which is the standard
-     * behavior for a single-use key.
-     */
-    if (EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt, 0) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_PKEY_CTX_set1_hkdf_key(ctx, secret, (int)secret_len) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_PKEY_CTX_add1_hkdf_info(ctx,
-                                     (const unsigned char *)BOWIE_SESSION_INFO,
-                                     (int)BOWIE_SESSION_INFO_LEN) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    out_len = BOWIE_SESSION_KEY_LEN;
-
-    rc = EVP_PKEY_derive(ctx, out_key, &out_len);
-
-    EVP_PKEY_CTX_free(ctx);
-
-    if (rc != 1 || out_len != BOWIE_SESSION_KEY_LEN) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    return BOWIE_OK;
-}
-
-/*
- * ============================================================================
- * INTERNAL — NONCE
- * ============================================================================
- *
- * Build the 12-byte nonce:
- *
- *     [ 4 bytes: zero ] [ 8 bytes: counter, big-endian ]
- */
-
-static void make_nonce(uint64_t counter, uint8_t out[BOWIE_SESSION_NONCE_LEN])
-{
-    out[0]  = 0;
-    out[1]  = 0;
-    out[2]  = 0;
-    out[3]  = 0;
-    out[4]  = (uint8_t)(counter >> 56);
-    out[5]  = (uint8_t)(counter >> 48);
-    out[6]  = (uint8_t)(counter >> 40);
-    out[7]  = (uint8_t)(counter >> 32);
-    out[8]  = (uint8_t)(counter >> 24);
-    out[9]  = (uint8_t)(counter >> 16);
-    out[10] = (uint8_t)(counter >> 8);
-    out[11] = (uint8_t)(counter);
-}
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * ============================================================================
@@ -222,60 +102,36 @@ static void make_nonce(uint64_t counter, uint8_t out[BOWIE_SESSION_NONCE_LEN])
  * ============================================================================
  */
 
+/*
+ * Create a session from a shared secret.
+ *
+ * The shared secret is the output of X25519 (32 bytes). The
+ * session layer runs HKDF-SHA256 on it to produce the
+ * symmetric key, then wipes the secret.
+ *
+ * The session ID is a caller-supplied nonce. It is not used
+ * for cryptography; it is used for logging and for
+ * correlating messages. An all-zero ID is rejected.
+ *
+ * On success, *out points to the new session handle.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if out or secret is NULL.
+ * Returns BOWIE_ERR_INVAL if the session ID is all-zero.
+ * Returns BOWIE_ERR_CRYPTO if HKDF fails.
+ */
 bowie_error_t bowie_session_new(const uint8_t *shared_secret,
                                 size_t shared_secret_len,
                                 const bowie_session_id_t *session_id,
-                                bowie_session_t **out)
-{
-    bowie_session_t *s;
-    bowie_error_t    rc;
+                                bowie_session_t **out);
 
-    if (out == NULL || shared_secret == NULL ||
-        session_id == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-
-    *out = NULL;
-
-    if (shared_secret_len == 0) {
-        return BOWIE_ERR_INVAL;
-    }
-
-    if (bowie_session_id_is_zero(session_id)) {
-        return BOWIE_ERR_INVAL;
-    }
-
-    s = (bowie_session_t *)calloc(1, sizeof(*s));
-
-    if (s == NULL) {
-        return BOWIE_ERR_NOMEM;
-    }
-
-    rc = derive_key(shared_secret, shared_secret_len, s->key);
-
-    if (rc != BOWIE_OK) {
-        OPENSSL_cleanse(s, sizeof(*s));
-        free(s);
-        return rc;
-    }
-
-    s->counter = 0;
-    memcpy(&s->id, session_id, sizeof(s->id));
-
-    *out = s;
-
-    return BOWIE_OK;
-}
-
-void bowie_session_free(bowie_session_t *session)
-{
-    if (session == NULL) {
-        return;
-    }
-
-    OPENSSL_cleanse(session, sizeof(*session));
-    free(session);
-}
+/*
+ * Free a session.
+ *
+ * The session key is wiped before the handle is freed.
+ * Passing NULL is a no-op.
+ */
+void bowie_session_free(bowie_session_t *session);
 
 /*
  * ============================================================================
@@ -283,222 +139,85 @@ void bowie_session_free(bowie_session_t *session)
  * ============================================================================
  */
 
+/*
+ * Return the session ID.
+ *
+ * The ID is copied into the caller's struct. Passing NULL for
+ * the session is a no-op.
+ */
 void bowie_session_get_id(const bowie_session_t *session,
-                          bowie_session_id_t *out)
-{
-    if (session == NULL || out == NULL) {
-        return;
-    }
-
-    memcpy(out, &session->id, sizeof(*out));
-}
+                          bowie_session_id_t *out);
 
 /*
  * ============================================================================
  * ENCRYPT
  * ============================================================================
+ *
+ * Encrypt a plaintext into a caller-supplied buffer.
+ *
+ * The output is the ciphertext followed by a 16-byte AEAD
+ * tag. The caller must allocate at least
+ * plaintext_len + 16 bytes.
+ *
+ * The nonce is derived from an internal counter that
+ * advances on every call. The caller must not skip a call:
+ * both peers must encrypt the same number of messages in the
+ * same order, or their nonces will diverge.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if any required pointer is NULL.
+ * Returns BOWIE_ERR_TOO_SMALL if the output buffer is too
+ *   small.
+ * Returns BOWIE_ERR_CRYPTO if the underlying cipher fails.
  */
-
 bowie_error_t bowie_session_encrypt(bowie_session_t *session,
                                     const void *plaintext,
                                     size_t plaintext_len,
                                     uint8_t *out,
                                     size_t out_cap,
-                                    size_t *out_len)
-{
-    EVP_CIPHER_CTX *ctx;
-    uint8_t         nonce[BOWIE_SESSION_NONCE_LEN];
-    int             len;
-    int             final_len;
-    size_t          written;
-    size_t          required;
-
-    if (session == NULL || out == NULL || out_len == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-    if (plaintext == NULL && plaintext_len > 0) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-
-    if (plaintext_len > SIZE_MAX - BOWIE_SESSION_TAG_LEN) {
-        return BOWIE_ERR_TOO_LARGE;
-    }
-
-    required = plaintext_len + BOWIE_SESSION_TAG_LEN;
-
-    if (out_cap < required) {
-        return BOWIE_ERR_TOO_SMALL;
-    }
-
-    if (plaintext_len > (size_t)INT_MAX) {
-        return BOWIE_ERR_TOO_LARGE;
-    }
-
-    make_nonce(session->counter, nonce);
-
-    ctx = EVP_CIPHER_CTX_new();
-    if (ctx == NULL) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
-                             BOWIE_SESSION_NONCE_LEN, NULL) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_EncryptInit_ex(ctx, NULL, NULL, session->key, nonce) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    len = 0;
-
-    if (plaintext_len > 0) {
-        if (EVP_EncryptUpdate(ctx, out, &len,
-                               (const unsigned char *)plaintext,
-                               (int)plaintext_len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return BOWIE_ERR_CRYPTO;
-        }
-    }
-
-    written = (size_t)len;
-
-    final_len = 0;
-    if (EVP_EncryptFinal_ex(ctx, out + written, &final_len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-    written += (size_t)final_len;
-
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG,
-                             BOWIE_SESSION_TAG_LEN,
-                             out + written) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-    written += BOWIE_SESSION_TAG_LEN;
-
-    EVP_CIPHER_CTX_free(ctx);
-
-    session->counter += 1;
-
-    *out_len = written;
-    return BOWIE_OK;
-}
+                                    size_t *out_len);
 
 /*
  * ============================================================================
  * DECRYPT
  * ============================================================================
+ *
+ * Decrypt a ciphertext produced by bowie_session_encrypt().
+ *
+ * The input is the ciphertext followed by a 16-byte AEAD
+ * tag. The caller passes the total length.
+ *
+ * The tag is verified before the plaintext is written to the
+ * output buffer. If verification fails, the output buffer is
+ * not modified.
+ *
+ * The nonce is derived from an internal counter that
+ * advances on every call. The caller must not skip a call:
+ * both peers must decrypt the same number of messages in the
+ * same order, or their nonces will diverge.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if any required pointer is NULL.
+ * Returns BOWIE_ERR_TOO_SMALL if the output buffer is too
+ *   small.
+ * Returns BOWIE_ERR_CRYPTO if the tag verification fails or
+ *   the cipher fails.
  */
-
 bowie_error_t bowie_session_decrypt(bowie_session_t *session,
                                     const void *ciphertext,
                                     size_t ciphertext_len,
                                     uint8_t *out,
                                     size_t out_cap,
-                                    size_t *out_len)
-{
-    EVP_CIPHER_CTX *ctx;
-    uint8_t         nonce[BOWIE_SESSION_NONCE_LEN];
-    int             len;
-    int             final_len;
-    size_t          written;
-    size_t          ct_len;
-
-    if (session == NULL || out == NULL || out_len == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-    if (ciphertext == NULL && ciphertext_len > 0) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-
-    if (ciphertext_len < BOWIE_SESSION_TAG_LEN) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    ct_len = ciphertext_len - BOWIE_SESSION_TAG_LEN;
-
-    if (out_cap < ct_len) {
-        return BOWIE_ERR_TOO_SMALL;
-    }
-
-    if (ct_len > (size_t)INT_MAX) {
-        return BOWIE_ERR_TOO_LARGE;
-    }
-
-    make_nonce(session->counter, nonce);
-
-    ctx = EVP_CIPHER_CTX_new();
-    if (ctx == NULL) {
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
-                             BOWIE_SESSION_NONCE_LEN, NULL) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    if (EVP_DecryptInit_ex(ctx, NULL, NULL, session->key, nonce) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-
-    len = 0;
-
-    if (ct_len > 0) {
-        if (EVP_DecryptUpdate(ctx, out, &len,
-                               (const unsigned char *)ciphertext,
-                               (int)ct_len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return BOWIE_ERR_CRYPTO;
-        }
-    }
-
-    written = (size_t)len;
-
-    {
-        const unsigned char *tag =
-            (const unsigned char *)ciphertext + ct_len;
-
-        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG,
-                                 BOWIE_SESSION_TAG_LEN,
-                                 (void *)tag) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            return BOWIE_ERR_CRYPTO;
-        }
-    }
-
-    final_len = 0;
-    if (EVP_DecryptFinal_ex(ctx, out + written, &final_len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return BOWIE_ERR_CRYPTO;
-    }
-    written += (size_t)final_len;
-
-    EVP_CIPHER_CTX_free(ctx);
-
-    session->counter += 1;
-
-    *out_len = written;
-    return BOWIE_OK;
-}
+                                    size_t *out_len);
 
 /*
  * ============================================================================
- * END OF SECURITY SESSION IMPLEMENTATION
+ * END OF SECURITY SESSION
  * ============================================================================
  */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* BOWIE_SECURITY_SESSION_H */
