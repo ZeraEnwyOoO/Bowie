@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -18,41 +18,32 @@
 
 /*
  * ============================================================================
- * BOWIE — TUNNEL TUN DEVICE
+ * BOWIE — TUNNEL TUN (LINUX)
  * ============================================================================
  *
- * Virtual network interface (TUN) management for the Bowie tunnel.
+ * Linux-specific virtual network interface (TUN) management.
  *
  * A TUN device is a kernel feature that allows a userspace
- * program to read and write raw IP packets. Bowie uses it to
- * intercept traffic on Peer B and route it through the tunnel
- * to Peer A.
- *
- * This header declares the platform-independent interface for
- * opening, reading from, writing to, and closing a TUN device.
- * The implementation lives in a platform-specific source file
- * (e.g., src/tunnel/tun_linux.c).
+ * program to read and write raw IP packets. This header
+ * declares the interface for the Linux implementation, which
+ * uses the standard /dev/net/tun driver.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No routing. Opening a TUN device does not automatically
- *     route traffic into it. The caller (or the Gateway layer)
- *     must configure the system routing table.
- *   - No NAT. The TUN device only handles packet I/O; network
- *     address translation is a Gateway concern.
- *   - No encryption. Packets read from the TUN device are raw.
- *     Encryption is applied by the Session layer before they
- *     are sent over the NAT connection.
- *   - No platform-specific logic. The struct is opaque, and
- *     the functions dispatch to the platform backend.
+ *   - No routing configuration. Creating a TUN device does
+ *     not add routes. The caller must configure the routing
+ *     table.
+ *   - No NAT. The TUN device is a plain packet pipe.
+ *   - No Android. The Android implementation uses the
+ *     VpnService API and has its own header and source.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The TUN handle is opaque. The caller owns it, never sees its
+ * The handle is opaque. The caller owns it, never sees its
  * layout, and frees it with bowie_tun_close().
  *
  * Reading from and writing to a TUN device is synchronous and
@@ -61,12 +52,11 @@
  * if it needs non-blocking I/O.
  *
  * The read and write functions are zero-copy: they write
- * directly into the caller's buffer. There is no intermediate
- * buffer inside the TUN implementation.
+ * directly into the caller's buffer.
  *
- * A TUN device is a scarce resource: it requires elevated
- * privileges (CAP_NET_ADMIN on Linux) to create. The caller
- * must handle permission errors gracefully and inform the user.
+ * A TUN device requires elevated privileges (CAP_NET_ADMIN on
+ * Linux) to create. The caller must handle permission errors
+ * gracefully.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -78,8 +68,8 @@
  * ============================================================================
  */
 
-#ifndef BOWIE_TUNNEL_TUN_H
-#define BOWIE_TUNNEL_TUN_H
+#ifndef BOWIE_TUNNEL_TUN_LINUX_H
+#define BOWIE_TUNNEL_TUN_LINUX_H
 
 #include <stddef.h>
 
@@ -97,13 +87,10 @@ extern "C" {
  */
 
 /*
- * Open and configure a TUN device.
+ * Open and configure a Linux TUN device.
  *
  * The name parameter is a hint. If the name is NULL or empty,
- * the operating system assigns a name (e.g., "tun0"). If the
- * name is provided, the function tries to use it; if the
- * device already exists or the name is invalid, the call
- * fails.
+ * the operating system assigns a name (e.g., "tun0").
  *
  * The mtu parameter sets the Maximum Transmission Unit of the
  * device. Passing zero uses the tunnel default
@@ -117,29 +104,23 @@ extern "C" {
  * Returns BOWIE_ERR_PERMISSION if the process lacks the
  * required privileges.
  * Returns BOWIE_ERR_SOCKET if the device could not be opened.
- * Returns BOWIE_ERR_NOT_IMPLEMENTED if the platform backend is
- * missing.
  */
 bowie_error_t bowie_tun_open(bowie_tun_t **out,
                              const char *name,
                              size_t mtu);
 
 /*
- * Close a TUN device.
+ * Close a Linux TUN device.
  *
  * This releases the file descriptor and destroys the
- * interface. Any packets in flight are dropped.
- *
- * Passing NULL is a no-op.
+ * interface. Passing NULL is a no-op.
  */
 void bowie_tun_close(bowie_tun_t *tun);
 
 /*
  * Return the underlying file descriptor of the TUN device.
  *
- * This is used for poll(), select(), or epoll() when the
- * caller wants to integrate the TUN device into an event
- * loop.
+ * This is used for poll(), select(), or epoll().
  *
  * Returns -1 if the handle is NULL or closed.
  */
@@ -171,22 +152,18 @@ long bowie_tun_read(bowie_tun_t *tun, void *buf, size_t cap);
  * Write one IP packet to the TUN device.
  *
  * The packet is injected into the kernel's network stack as
- * if it had arrived from a physical interface. The kernel
- * will route it according to the system routing table.
- *
- * The buffer is not modified.
+ * if it had arrived from a physical interface.
  *
  * Returns the number of bytes written.
  * Returns BOWIE_ERR_NULL_ARG if tun or buf is NULL.
  * Returns BOWIE_ERR_INVAL if len is zero.
- * Returns BOWIE_ERR_TOO_LARGE if len exceeds the device MTU.
  * Returns BOWIE_ERR_NETWORK if the write fails.
  */
 long bowie_tun_write(bowie_tun_t *tun, const void *buf, size_t len);
 
 /*
  * ============================================================================
- * END OF TUNNEL TUN
+ * END OF TUNNEL TUN (LINUX)
  * ============================================================================
  */
 
@@ -194,4 +171,4 @@ long bowie_tun_write(bowie_tun_t *tun, const void *buf, size_t len);
 }
 #endif
 
-#endif /* BOWIE_TUNNEL_TUN_H */
+#endif /* BOWIE_TUNNEL_TUN_LINUX_H */
