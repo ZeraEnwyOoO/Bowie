@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -32,7 +32,6 @@
  * ----------------------------------------------------------------------------
  *
  *   - No I/O.
- *   - No checksum verification.
  *   - No fragmentation.
  *   - No allocation.
  *
@@ -58,15 +57,17 @@
  * minimum header size; an IHL of zero or one is a malformed
  * packet and is rejected.
  *
- * The header length for IPv6 is fixed at 40 bytes. Extension
- * headers follow the base header and are not parsed here;
- * the tunnel treats the packet as opaque payload after the
- * base header.
+ * The checksum for IPv4 is computed over the header only,
+ * not over the payload. The standard Internet checksum is
+ * used: sum the 16-bit words in one's complement, then take
+ * the one's complement of the sum. The result is compared to
+ * the checksum field in the header; if they match, the
+ * header is valid.
  *
- * The total length field is read as-is from the header. It is
- * not compared to the span length. A truncated packet and a
- * padded packet are both possible, and deciding what to do
- * about them is the caller's job.
+ * The sum is accumulated in a 32-bit integer and folded at
+ * the end. This is the standard trick to handle an odd
+ * number of bytes and to avoid overflow during the
+ * accumulation.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -104,6 +105,41 @@
 static uint16_t read_be16(const uint8_t *p)
 {
     return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+/*
+ * ============================================================================
+ * INTERNAL — CHECKSUM
+ * ============================================================================
+ *
+ * Standard Internet checksum: sum 16-bit words in one's
+ * complement and return the one's complement of the sum.
+ *
+ * The standard defines the checksum over the entire IPv4
+ * header, including the checksum field. The sum of a valid
+ * header, including its checksum field, is zero. That is what
+ * the verification function relies on.
+ */
+
+static uint16_t checksum16(const uint8_t *data, size_t len)
+{
+    uint32_t sum = 0;
+    size_t   i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += (uint32_t)(((uint16_t)data[i] << 8) | data[i + 1]);
+    }
+
+    if (i < len) {
+        /* Odd byte: pad with zero on the right. */
+        sum += (uint32_t)((uint16_t)data[i] << 8);
+    }
+
+    while (sum >> 16) {
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+    }
+
+    return (uint16_t)(~sum & 0xFFFFu);
 }
 
 /*
@@ -297,6 +333,65 @@ uint16_t bowie_packet_length(bowie_span_t packet)
     }
 
     return parsed.total_len;
+}
+
+/*
+ * ============================================================================
+ * CHECKSUM
+ * ============================================================================
+ */
+
+int bowie_packet_checksum_valid(bowie_span_t packet)
+{
+    uint8_t        version;
+    size_t         header_len;
+    uint16_t       computed;
+
+    if (packet.data == NULL || packet.len < 1) {
+        return 0;
+    }
+
+    version = (uint8_t)(packet.data[0] >> 4);
+
+    if (version == BOWIE_IP_VERSION_4) {
+        /*
+         * The header length is in the IHL field; the same
+         * validation as parse_ipv4 applies.
+         */
+        if (packet.len < BOWIE_IPV4_HEADER_MIN) {
+            return 0;
+        }
+
+        if ((packet.data[0] & 0x0Fu) < 5) {
+            return 0;
+        }
+
+        header_len = (size_t)(packet.data[0] & 0x0Fu) * 4u;
+
+        if (packet.len < header_len) {
+            return 0;
+        }
+
+        /*
+         * The checksum covers the entire header, including
+         * the checksum field. If the header is valid, the
+         * sum is zero.
+         */
+        computed = checksum16(packet.data, header_len);
+
+        return (computed == 0) ? 1 : 0;
+    }
+
+    if (version == BOWIE_IP_VERSION_6) {
+        /*
+         * IPv6 has no header checksum. The integrity of the
+         * packet is provided by the transport layer or by
+         * the crypto layer above the tunnel.
+         */
+        return 1;
+    }
+
+    return 0;
 }
 
 /*
