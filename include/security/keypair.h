@@ -70,7 +70,23 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* include/security/keypair.h — បន្ថែមបន្ទាប់ពី includes */
 
+#define BOWIE_KEYPAIR_PUBLIC_LEN   32
+#define BOWIE_KEYPAIR_PRIVATE_LEN  32
+#define BOWIE_KEYPAIR_SHARED_LEN   32
+
+typedef struct bowie_keypair_public {
+    uint8_t bytes[BOWIE_KEYPAIR_PUBLIC_LEN];
+} bowie_keypair_public_t;
+
+typedef struct bowie_keypair_private {
+    uint8_t bytes[BOWIE_KEYPAIR_PRIVATE_LEN];
+} bowie_keypair_private_t;
+
+typedef struct bowie_keypair_shared {
+    uint8_t bytes[BOWIE_KEYPAIR_SHARED_LEN];
+} bowie_keypair_shared_t;
 /*
  * ============================================================================
  * GENERATION
