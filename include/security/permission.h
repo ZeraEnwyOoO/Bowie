@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -36,10 +36,7 @@
  * ----------------------------------------------------------------------------
  *
  *   - No key generation.
- *   - No I/O.
- *   - No session key derivation. That is done by
- *     bowie_session_new(), which the caller runs after the
- *     permission check succeeds.
+ *   - No session key derivation.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -61,6 +58,11 @@
  *
  * A failure at any step produces a specific error code. The
  * caller can map the code to a user-facing message.
+ *
+ * Logging is done on every failure, but not on success: a
+ * successful check is a normal event and does not need a log
+ * line per connection. A caller that wants an audit trail
+ * logs the success itself.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -135,6 +137,50 @@ bowie_error_t bowie_permission_check_list(
     bowie_span_t               challenge,
     bowie_span_t               signature,
     bowie_wtime_t              now);
+
+/*
+ * ============================================================================
+ * SESSION BINDING
+ * ============================================================================
+ *
+ * Check the permission and bind the result to a session.
+ *
+ * The session is created by the caller after the permission
+ * check succeeds. The bind function runs the check and, on
+ * success, records the session as authorized. The session
+ * layer uses the record to decide whether to send or receive.
+ *
+ * A NULL session is allowed; in that case the function only
+ * runs the check and returns the result. This is the form the
+ * unit tests use.
+ *
+ * Returns the same error codes as bowie_permission_check_list().
+ */
+bowie_error_t bowie_permission_check_and_bind(
+    const bowie_grant_t       *grant,
+    const bowie_public_id_t   *owner,
+    const bowie_revoke_list_t *revoke_list,
+    uint32_t                   capability,
+    const bowie_peer_id_t     *subject_id,
+    bowie_span_t               challenge,
+    bowie_span_t               signature,
+    bowie_wtime_t              now,
+    bowie_session_t           *session);
+
+/*
+ * ============================================================================
+ * HELPERS
+ * ============================================================================
+ */
+
+/*
+ * Return a human-readable string for a permission error.
+ *
+ * The returned pointer is to a static string and must not be
+ * freed. The string is never NULL, even for an error code
+ * that the permission layer does not produce.
+ */
+const char *bowie_permission_error_string(bowie_error_t rc);
 
 /*
  * ============================================================================
