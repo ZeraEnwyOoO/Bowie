@@ -71,7 +71,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "security/sign.h"        /* ← ប្តូរមកប្រើ security/sign.h */
+#include "security/sign.h"        
 #include "security/ownership.h"
 
 /*
