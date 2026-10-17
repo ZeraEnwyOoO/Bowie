@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -23,10 +23,8 @@
  *
  * Ed25519 signatures for the security layer.
  *
- * This header declares the signing functions the security layer
- * uses. It is independent of crypto/sign.h. The security layer
- * calls OpenSSL directly, so that it does not depend on the
- * general-purpose crypto layer.
+ * This header declares the signing functions and types the
+ * security layer uses. It is independent of crypto/sign.h.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
@@ -54,8 +52,7 @@
  *
  *   <stdint.h>              uint8_t
  *   <stddef.h>              size_t
- *   "bowie/types.h"         bowie_sign_public_t, bowie_sign_private_t,
- *                           bowie_sign_signature_t
+ *   "bowie/types.h"         (no sign types are declared there)
  *   "bowie/err.h"           bowie_error_t
  * ============================================================================
  */
@@ -75,37 +72,40 @@ extern "C" {
 
 /*
  * ============================================================================
+ * TYPES
+ * ============================================================================
+ *
+ * Fixed-size value types. A key or a signature can be copied
+ * and compared without allocation.
+ */
+
+#define BOWIE_SIGN_PUBLIC_LEN    32
+#define BOWIE_SIGN_PRIVATE_LEN   64
+#define BOWIE_SIGN_SIGNATURE_LEN 64
+
+typedef struct bowie_sign_public {
+    uint8_t bytes[BOWIE_SIGN_PUBLIC_LEN];
+} bowie_sign_public_t;
+
+typedef struct bowie_sign_private {
+    uint8_t bytes[BOWIE_SIGN_PRIVATE_LEN];
+} bowie_sign_private_t;
+
+typedef struct bowie_sign_signature {
+    uint8_t bytes[BOWIE_SIGN_SIGNATURE_LEN];
+} bowie_sign_signature_t;
+
+/*
+ * ============================================================================
  * SIGN
  * ============================================================================
  */
 
-/*
- * Sign a message with an Ed25519 private key.
- *
- * On success, the 64-byte signature is written through out.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if private_key, msg, or out is
- *   NULL. A msg pointer with len == 0 is allowed.
- * Returns BOWIE_ERR_CRYPTO if the underlying library reports a
- *   failure.
- */
 bowie_error_t bowie_security_sign(
     const bowie_sign_private_t *private_key,
     const void *msg, size_t msg_len,
     bowie_sign_signature_t *out);
 
-/*
- * Verify an Ed25519 signature.
- *
- * Returns BOWIE_OK if the signature is valid.
- * Returns BOWIE_ERR_NULL_ARG if public_key, msg, or signature
- *   is NULL. A msg pointer with len == 0 is allowed.
- * Returns BOWIE_ERR_SIGN_INVALID if the signature does not
- *   verify.
- * Returns BOWIE_ERR_CRYPTO if the underlying library reports a
- *   failure.
- */
 bowie_error_t bowie_security_verify(
     const bowie_sign_public_t *public_key,
     const void *msg, size_t msg_len,
