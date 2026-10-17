@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -333,6 +333,9 @@ typedef struct bowie_dht bowie_dht_t;
 typedef struct bowie_tunnel bowie_tunnel_t;
 typedef struct bowie_nat bowie_nat_t;
 typedef struct bowie_grant bowie_grant_t;
+
+/* --- បន្ថែមសម្រាប់ TUNNEL --- */
+typedef struct bowie_tun bowie_tun_t;
 
 /*
  * ============================================================================
