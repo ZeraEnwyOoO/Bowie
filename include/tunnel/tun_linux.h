@@ -1,4 +1,4 @@
- /*
+  /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -53,6 +53,12 @@
  *
  * The read and write functions are zero-copy: they write
  * directly into the caller's buffer.
+ *
+ * The read function does not require a buffer of any specific
+ * size. It reads up to `cap` bytes into the caller's buffer.
+ * If the caller's buffer is too small for the packet, the
+ * packet is truncated. The caller must provide a buffer large
+ * enough for the largest packet it expects to receive.
  *
  * A TUN device requires elevated privileges (CAP_NET_ADMIN on
  * Linux) to create. The caller must handle permission errors
@@ -136,14 +142,20 @@ int bowie_tun_fd(const bowie_tun_t *tun);
  * Read one IP packet from the TUN device into the caller's
  * buffer.
  *
- * This function blocks until a packet is available. The
- * caller may use bowie_tun_fd() and poll() if it needs a
- * timeout or non-blocking behavior.
+ * This function blocks until a packet is available, unless
+ * the device was opened in non-blocking mode.
+ *
+ * The function reads up to `cap` bytes. If the packet is
+ * larger than `cap`, the excess is discarded by the kernel.
+ * The caller must provide a buffer large enough for the
+ * largest packet it expects to receive. A buffer of
+ * BOWIE_TUN_MTU_MAX bytes is always safe.
  *
  * Returns the number of bytes read (the packet length).
  * Returns BOWIE_ERR_NULL_ARG if tun or buf is NULL.
- * Returns BOWIE_ERR_TOO_SMALL if cap is smaller than the
- * largest possible packet.
+ * Returns BOWIE_ERR_TOO_SMALL if cap is zero.
+ * Returns BOWIE_ERR_AGAIN if the device is non-blocking and
+ * no packet is available.
  * Returns BOWIE_ERR_NETWORK if the read fails.
  */
 long bowie_tun_read(bowie_tun_t *tun, void *buf, size_t cap);
@@ -157,6 +169,8 @@ long bowie_tun_read(bowie_tun_t *tun, void *buf, size_t cap);
  * Returns the number of bytes written.
  * Returns BOWIE_ERR_NULL_ARG if tun or buf is NULL.
  * Returns BOWIE_ERR_INVAL if len is zero.
+ * Returns BOWIE_ERR_AGAIN if the device is non-blocking and
+ * the kernel buffer is full.
  * Returns BOWIE_ERR_NETWORK if the write fails.
  */
 long bowie_tun_write(bowie_tun_t *tun, const void *buf, size_t len);
