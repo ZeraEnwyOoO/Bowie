@@ -24,18 +24,11 @@
  * Unit tests for the Proof of Ownership helpers declared in
  * security/ownership.h.
  *
- * These tests exercise the real logic: a signature over a
- * challenge, produced with a real Ed25519 key, must verify
- * against the matching public key. A signature over a
- * different challenge must not verify. A signature produced
- * with a different key must not verify.
- *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
  *   - No I/O.
- *   - No key storage.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -43,8 +36,7 @@
  *
  * The tests use OpenSSL directly to generate an Ed25519 keypair
  * and to sign a challenge. The signature is then passed to
- * bowie_ownership_verify() and the result is checked. This is
- * the strongest test short of a network test.
+ * bowie_ownership_verify() and the result is checked.
  *
  * The suite is split into three cases:
  *
@@ -61,7 +53,7 @@
  *   <openssl/evp.h>         EVP_PKEY, EVP_MD_CTX, EVP_DigestSign
  *   "bowie/types.h"         types
  *   "bowie/err.h"           errors
- *   "crypto/sign.h"         Ed25519 signing and verification
+ *   "security/sign.h"       bowie_security_sign
  *   "security/ownership.h"  declarations
  * ============================================================================
  */
@@ -72,7 +64,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "crypto/sign.h"
+#include "security/sign.h"
 #include "security/ownership.h"
 
 /*
@@ -81,9 +73,6 @@
  * ============================================================================
  */
 
-/*
- * Generate an Ed25519 keypair using OpenSSL directly.
- */
 static int generate_ed25519_keypair(bowie_sign_public_t *pub,
                                      bowie_sign_private_t *priv)
 {
@@ -93,9 +82,7 @@ static int generate_ed25519_keypair(bowie_sign_public_t *pub,
     size_t        priv_len = BOWIE_SIGN_PRIVATE_LEN;
 
     ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
-    if (ctx == NULL) {
-        return 0;
-    }
+    if (ctx == NULL) return 0;
 
     if (EVP_PKEY_keygen_init(ctx) != 1) {
         EVP_PKEY_CTX_free(ctx);
@@ -125,9 +112,6 @@ static int generate_ed25519_keypair(bowie_sign_public_t *pub,
             priv_len == BOWIE_SIGN_PRIVATE_LEN) ? 1 : 0;
 }
 
-/*
- * Build a bowie_public_id_t from a bowie_sign_public_t.
- */
 static void public_id_from_sign(const bowie_sign_public_t *pub,
                                 bowie_public_id_t *out)
 {
@@ -239,7 +223,7 @@ START_TEST(test_ownership_verify_valid)
     ck_assert_int_eq(generate_ed25519_keypair(&pub, &priv), 1);
     public_id_from_sign(&pub, &id);
 
-    rc = bowie_sign_ed25519(&priv, challenge, sizeof(challenge), &sig);
+    rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
 
     c.data = challenge;
@@ -275,7 +259,7 @@ START_TEST(test_ownership_verify_wrong_challenge)
     ck_assert_int_eq(generate_ed25519_keypair(&pub, &priv), 1);
     public_id_from_sign(&pub, &id);
 
-    rc = bowie_sign_ed25519(&priv, challenge, sizeof(challenge), &sig);
+    rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
 
     challenge[0] ^= 0x01;
@@ -309,7 +293,7 @@ START_TEST(test_ownership_verify_wrong_key)
 
     public_id_from_sign(&pub1, &id);
 
-    rc = bowie_sign_ed25519(&priv2, challenge, sizeof(challenge), &sig);
+    rc = bowie_security_sign(&priv2, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
 
     c.data = challenge;
