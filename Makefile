@@ -239,6 +239,8 @@ LIB_SRCS := \
     src/security/revoke.c \
     src/security/session.c \
     src/security/permission.c \
+    src/security/sign.c \
+    src/security/keypair.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS) \
     $(TUNNEL_SRCS)
