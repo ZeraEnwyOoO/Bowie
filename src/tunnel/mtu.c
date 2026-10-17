@@ -70,7 +70,8 @@
  *   - a UDP header (8 bytes)
  *   - a session framing header (4 bytes)
  *   - an AEAD tag (16 bytes)
- *   - a small safety margin (52 bytes)
+ *   - a safety margin for future headers and path MTU
+ *     variation (52 bytes)
  *
  * The total is 100 bytes, which is exactly the difference
  * between BOWIE_TUN_MTU_DEFAULT and BOWIE_TUN_MTU_TUNNEL.
