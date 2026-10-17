@@ -41,12 +41,10 @@
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The tests use the real crypto layer (crypto/sign.h) to
- * generate a keypair and to sign a challenge. The signature
- * is then passed to bowie_ownership_verify() and the result
- * is checked. This is the strongest test short of a network
- * test: it exercises the same code path the real
- * implementation uses.
+ * The tests use OpenSSL directly to generate an Ed25519 keypair
+ * and to sign a challenge. The signature is then passed to
+ * bowie_ownership_verify() and the result is checked. This is
+ * the strongest test short of a network test.
  *
  * The suite is split into three cases:
  *
@@ -60,15 +58,17 @@
  *
  *   <check.h>               test framework
  *   <string.h>              memset, memcpy
+ *   <openssl/evp.h>         EVP_PKEY, EVP_MD_CTX, EVP_DigestSign
  *   "bowie/types.h"         types
  *   "bowie/err.h"           errors
- *   "crypto/sign.h"         Ed25519 key generation and signing
+ *   "crypto/sign.h"         Ed25519 signing and verification
  *   "security/ownership.h"  declarations
  * ============================================================================
  */
 
 #include <check.h>
 #include <string.h>
+#include <openssl/evp.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
@@ -80,6 +80,50 @@
  * HELPERS
  * ============================================================================
  */
+
+/*
+ * Generate an Ed25519 keypair using OpenSSL directly.
+ */
+static int generate_ed25519_keypair(bowie_sign_public_t *pub,
+                                     bowie_sign_private_t *priv)
+{
+    EVP_PKEY_CTX *ctx;
+    EVP_PKEY     *pkey;
+    size_t        pub_len = BOWIE_SIGN_PUBLIC_LEN;
+    size_t        priv_len = BOWIE_SIGN_PRIVATE_LEN;
+
+    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
+    if (ctx == NULL) {
+        return 0;
+    }
+
+    if (EVP_PKEY_keygen_init(ctx) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        return 0;
+    }
+
+    if (EVP_PKEY_keygen(ctx, &pkey) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        return 0;
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+
+    if (EVP_PKEY_get_raw_public_key(pkey, pub->bytes, &pub_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return 0;
+    }
+
+    if (EVP_PKEY_get_raw_private_key(pkey, priv->bytes, &priv_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return 0;
+    }
+
+    EVP_PKEY_free(pkey);
+
+    return (pub_len == BOWIE_SIGN_PUBLIC_LEN &&
+            priv_len == BOWIE_SIGN_PRIVATE_LEN) ? 1 : 0;
+}
 
 /*
  * Build a bowie_public_id_t from a bowie_sign_public_t.
@@ -192,9 +236,7 @@ START_TEST(test_ownership_verify_valid)
 
     memset(challenge, 0xAA, sizeof(challenge));
 
-    rc = bowie_sign_ed25519_generate(&pub, &priv);
-    ck_assert_int_eq(rc, BOWIE_OK);
-
+    ck_assert_int_eq(generate_ed25519_keypair(&pub, &priv), 1);
     public_id_from_sign(&pub, &id);
 
     rc = bowie_sign_ed25519(&priv, challenge, sizeof(challenge), &sig);
@@ -230,15 +272,12 @@ START_TEST(test_ownership_verify_wrong_challenge)
 
     memset(challenge, 0xAA, sizeof(challenge));
 
-    rc = bowie_sign_ed25519_generate(&pub, &priv);
-    ck_assert_int_eq(rc, BOWIE_OK);
-
+    ck_assert_int_eq(generate_ed25519_keypair(&pub, &priv), 1);
     public_id_from_sign(&pub, &id);
 
     rc = bowie_sign_ed25519(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
 
-    /* Tamper with the challenge. */
     challenge[0] ^= 0x01;
 
     c.data = challenge;
@@ -265,12 +304,9 @@ START_TEST(test_ownership_verify_wrong_key)
 
     memset(challenge, 0xAA, sizeof(challenge));
 
-    rc = bowie_sign_ed25519_generate(&pub1, &priv1);
-    ck_assert_int_eq(rc, BOWIE_OK);
-    rc = bowie_sign_ed25519_generate(&pub2, &priv2);
-    ck_assert_int_eq(rc, BOWIE_OK);
+    ck_assert_int_eq(generate_ed25519_keypair(&pub1, &priv1), 1);
+    ck_assert_int_eq(generate_ed25519_keypair(&pub2, &priv2), 1);
 
-    /* Use key 2 to sign, but claim key 1. */
     public_id_from_sign(&pub1, &id);
 
     rc = bowie_sign_ed25519(&priv2, challenge, sizeof(challenge), &sig);
