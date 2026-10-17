@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -59,9 +59,13 @@
  * replay attack impractical without additional measures.
  *
  * The response is the signature over the challenge. The
- * verifier checks the signature against the prover's public
- * key. The public key is supplied by the verifier, not by
- * the prover: the verifier must already know the key it is
+ * signature must be exactly BOWIE_SIGN_SIGNATURE_LEN (64)
+ * bytes, which is the Ed25519 signature size. A signature of
+ * any other size is rejected before the crypto layer is
+ * called.
+ *
+ * The public key is supplied by the verifier, not by the
+ * prover: the verifier must already know the key it is
  * checking against, or the check is meaningless.
  *
  * The signature algorithm is Ed25519. The verifier does not
@@ -114,11 +118,14 @@ extern "C" {
  * the public key and the peer identity before calling this
  * function.
  *
+ * The signature must be exactly 64 bytes (Ed25519). The
+ * challenge may be any non-zero length.
+ *
  * Returns BOWIE_OK when the signature is valid.
  * Returns BOWIE_ERR_NULL_ARG if any pointer is NULL.
  * Returns BOWIE_ERR_TOO_SMALL if the challenge length is zero.
  * Returns BOWIE_ERR_SIGN_INVALID if the signature does not
- * verify.
+ *   verify or has the wrong length.
  */
 bowie_error_t bowie_ownership_verify(const bowie_public_id_t *public_id,
                                      bowie_span_t challenge,
