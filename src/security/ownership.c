@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -44,7 +44,7 @@
  * ----------------------------------------------------------------------------
  *
  * The public ID is the raw Ed25519 public key. The crypto
- * layer expects a key in a specific format; the conversion
+ * layer expects a bowie_sign_public_t struct; the conversion
  * between the raw bytes and that format is handled by
  * crypto/sign.h, not here.
  *
@@ -59,12 +59,15 @@
  * Dependencies
  * ----------------------------------------------------------------------------
  *
+ *   <string.h>              memcpy
  *   "bowie/types.h"         bowie_span_t, bowie_public_id_t
  *   "bowie/err.h"           bowie_error_t and codes
- *   "crypto/sign.h"         bowie_sign_verify()
+ *   "crypto/sign.h"         bowie_sign_ed25519_verify()
  *   "security/ownership.h"  declarations
  * ============================================================================
  */
+
+#include <string.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
@@ -81,7 +84,9 @@ bowie_error_t bowie_ownership_verify(const bowie_public_id_t *public_id,
                                      bowie_span_t challenge,
                                      bowie_span_t signature)
 {
-    int rc;
+    bowie_sign_public_t    pub_key;
+    bowie_sign_signature_t sig;
+    bowie_error_t          rc;
 
     if (public_id == NULL) {
         return BOWIE_ERR_NULL_ARG;
@@ -99,21 +104,25 @@ bowie_error_t bowie_ownership_verify(const bowie_public_id_t *public_id,
         return BOWIE_ERR_TOO_SMALL;
     }
 
-    if (signature.len == 0) {
-        return BOWIE_ERR_TOO_SMALL;
+    if (signature.len != BOWIE_SIGN_SIGNATURE_LEN) {
+        return BOWIE_ERR_SIGN_INVALID;
     }
 
     /*
-     * The signature verification is delegated to the crypto
-     * layer. The public ID is passed as raw bytes; the crypto
-     * layer converts it to its internal key format.
+     * Convert the raw public ID bytes into the crypto layer's
+     * public key struct.
      */
-    rc = bowie_sign_verify(public_id->bytes,
-                           BOWIE_PUBLIC_ID_LEN,
-                           challenge.data,
-                           challenge.len,
-                           signature.data,
-                           signature.len);
+    memcpy(pub_key.bytes, public_id->bytes, BOWIE_SIGN_PUBLIC_LEN);
+    memcpy(sig.bytes, signature.data, BOWIE_SIGN_SIGNATURE_LEN);
+
+    /*
+     * The signature verification is delegated to the crypto
+     * layer.
+     */
+    rc = bowie_sign_ed25519_verify(&pub_key,
+                                    challenge.data,
+                                    challenge.len,
+                                    &sig);
 
     if (rc != BOWIE_OK) {
         return BOWIE_ERR_SIGN_INVALID;
