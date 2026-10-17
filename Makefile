@@ -241,6 +241,10 @@ LIB_SRCS := \
     src/security/permission.c \
     src/security/sign.c \
     src/security/keypair.c \
+    src/gateway/gateway.c \
+    src/gateway/ip_forward.c \
+    src/gateway/conntrack.c \
+    src/gateway/route.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS) \
     $(TUNNEL_SRCS)
@@ -301,7 +305,11 @@ UNIT_TEST_SRCS := \
     tests/unit/security/test_ownership.c \
     tests/unit/security/test_revoke.c \
     tests/unit/security/test_session.c \
-    tests/unit/security/test_permission.c
+    tests/unit/security/test_permission.c \
+    tests/unit/gateway/test_route.c \
+    tests/unit/gateway/test_conntrack.c \
+    tests/unit/gateway/test_ip_forward.c \
+    tests/unit/gateway/test_gateway.c
 
 UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 
