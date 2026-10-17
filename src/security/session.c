@@ -68,12 +68,12 @@
  *                           EVP_CIPHER_CTX_new, EVP_CIPHER_CTX_free,
  *                           EVP_PKEY_HKDF, EVP_PKEY_CTX_new_id,
  *                           EVP_PKEY_derive_init,
- *                           EVP_PKEY_CTX_set_hkdf_md,
- *                           EVP_PKEY_CTX_set1_hkdf_salt,
- *                           EVP_PKEY_CTX_set1_hkdf_key,
- *                           EVP_PKEY_CTX_add1_hkdf_info,
  *                           EVP_PKEY_derive, EVP_PKEY_CTX_free,
  *                           EVP_sha256
+ *   <openssl/kdf.h>         EVP_PKEY_CTX_set_hkdf_md,
+ *                           EVP_PKEY_CTX_set1_hkdf_salt,
+ *                           EVP_PKEY_CTX_set1_hkdf_key,
+ *                           EVP_PKEY_CTX_add1_hkdf_info
  *   <openssl/crypto.h>      OPENSSL_cleanse
  *   <limits.h>              INT_MAX
  *   <stdlib.h>              calloc, free
@@ -85,6 +85,7 @@
  */
 
 #include <openssl/evp.h>
+#include <openssl/kdf.h>   
 #include <openssl/crypto.h>
 
 #include <limits.h>
