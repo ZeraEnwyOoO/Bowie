@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -37,10 +37,9 @@
  *
  *   - No real device. bowie_tun_open() is only called with
  *     parameters that fail before the kernel is touched.
- *   - No I/O. bowie_tun_read() and bowie_tun_write() are only
- *     checked for their NULL contracts.
- *   - No privilege test. Whether the caller has CAP_NET_ADMIN
- *     is not checked; the tests must pass for any user.
+ *   - No I/O on a real device. bowie_tun_read() and
+ *     bowie_tun_write() are only checked for their NULL
+ *     contracts.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -60,6 +59,7 @@
  * ----------------------------------------------------------------------------
  *
  *   <check.h>               test framework
+ *   <stddef.h>              NULL
  *   "bowie/types.h"         bowie_tun_t
  *   "bowie/err.h"           bowie_error_t and codes
  *   "tunnel/tun_linux.h"    public contract
@@ -89,14 +89,14 @@ START_TEST(test_tun_open_null_out)
 }
 END_TEST
 
-START_TEST(test_tun_open_invalid_mtu)
+START_TEST(test_tun_open_invalid_mtu_low)
 {
     bowie_tun_t  *tun = NULL;
     bowie_error_t rc;
 
     /*
-     * An MTU below the accepted minimum must be rejected before
-     * any kernel resource is touched.
+     * An MTU below the accepted minimum must be rejected
+     * before any kernel resource is touched.
      */
     rc = bowie_tun_open(&tun, "tun0", 1);
 
@@ -105,7 +105,7 @@ START_TEST(test_tun_open_invalid_mtu)
 }
 END_TEST
 
-START_TEST(test_tun_open_mtu_too_large)
+START_TEST(test_tun_open_invalid_mtu_high)
 {
     bowie_tun_t  *tun = NULL;
     bowie_error_t rc;
@@ -172,6 +172,22 @@ START_TEST(test_tun_read_null_buf)
 }
 END_TEST
 
+START_TEST(test_tun_read_zero_cap)
+{
+    bowie_tun_t *tun = NULL;
+    uint8_t      buf[8] = {0};
+    long         rc;
+
+    /*
+     * The handle is NULL, so the function returns
+     * BOWIE_ERR_NULL_ARG before looking at cap.
+     */
+    rc = bowie_tun_read(tun, buf, 0);
+
+    ck_assert_int_eq((bowie_error_t)rc, BOWIE_ERR_NULL_ARG);
+}
+END_TEST
+
 START_TEST(test_tun_write_null_tun)
 {
     uint8_t buf[8] = {0};
@@ -211,8 +227,8 @@ static Suite *tun_linux_suite(void)
 
     tc_contract = tcase_create("Contract");
     tcase_add_test(tc_contract, test_tun_open_null_out);
-    tcase_add_test(tc_contract, test_tun_open_invalid_mtu);
-    tcase_add_test(tc_contract, test_tun_open_mtu_too_large);
+    tcase_add_test(tc_contract, test_tun_open_invalid_mtu_low);
+    tcase_add_test(tc_contract, test_tun_open_invalid_mtu_high);
     suite_add_tcase(s, tc_contract);
 
     tc_lifecycle = tcase_create("Lifecycle");
@@ -223,6 +239,7 @@ static Suite *tun_linux_suite(void)
     tc_io = tcase_create("IO");
     tcase_add_test(tc_io, test_tun_read_null_tun);
     tcase_add_test(tc_io, test_tun_read_null_buf);
+    tcase_add_test(tc_io, test_tun_read_zero_cap);
     tcase_add_test(tc_io, test_tun_write_null_tun);
     tcase_add_test(tc_io, test_tun_write_null_buf);
     suite_add_tcase(s, tc_io);
