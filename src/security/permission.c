@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -26,8 +26,6 @@
  *
  * The check is a sequence of conditions. Each condition is
  * checked in order and the first failure stops the check.
- * The order is chosen so that the cheapest checks come first
- * and the most informative error is produced.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
@@ -41,11 +39,19 @@
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The subject check is the most important one. A grant names
- * a subject; a peer that proves a different key is rejected
- * even if the grant is valid and not revoked. This is what
- * makes a stolen grant useless to an attacker who does not
- * also hold the corresponding private key.
+ * Every failure is logged with bowie_log_warn(). A success is
+ * not logged here; a caller that wants an audit trail logs
+ * it itself. This keeps the log from filling with one line
+ * per connection on a busy gateway.
+ *
+ * The log message includes the first two bytes of the
+ * subject ID. It does not include the full ID, the grant ID,
+ * or any key material. This is enough to correlate a log
+ * line with a peer without leaking a secret.
+ *
+ * The session bind is a no-op when the session is NULL. This
+ * lets the unit tests run the check without creating a
+ * session.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -53,6 +59,7 @@
  *
  *   "bowie/types.h"           types
  *   "bowie/err.h"             errors
+ *   "core/log.h"              bowie_log_warn
  *   "security/grant.h"        grant fields and helpers
  *   "security/ownership.h"    proof of ownership
  *   "security/revoke.h"       revocation list
@@ -62,10 +69,36 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
+#include "core/log.h"
 #include "security/grant.h"
 #include "security/ownership.h"
 #include "security/revoke.h"
 #include "security/permission.h"
+
+/*
+ * ============================================================================
+ * INTERNAL — LOG
+ * ============================================================================
+ *
+ * Log a failed check with the first two bytes of the subject
+ * ID. The subject ID is not logged in full; the first two
+ * bytes are enough to correlate the line with a peer without
+ * making the log a list of every peer that tried to connect.
+ */
+
+static void log_failure(const char *reason,
+                        const bowie_peer_id_t *subject)
+{
+    if (subject == NULL) {
+        bowie_log_warn("permission: %s (subject unknown)", reason);
+        return;
+    }
+
+    bowie_log_warn("permission: %s (subject %02x%02x)",
+                   reason,
+                   subject->bytes[0],
+                   subject->bytes[1]);
+}
 
 /*
  * ============================================================================
@@ -88,48 +121,96 @@ bowie_error_t bowie_permission_check_list(
         return BOWIE_ERR_NULL_ARG;
     }
 
-    /*
-     * 1. The grant must name the expected owner.
-     */
     if (!bowie_grant_matches_issuer(grant, owner)) {
+        log_failure("owner mismatch", subject_id);
         return BOWIE_ERR_OWNER_MISMATCH;
     }
 
-    /*
-     * 2. The grant must not have expired.
-     */
     if (!bowie_grant_is_time_valid(grant, now)) {
+        log_failure("grant expired", subject_id);
         return BOWIE_ERR_GRANT_EXPIRED;
     }
 
-    /*
-     * 3. The grant must not be revoked.
-     */
     if (bowie_revoke_list_contains(revoke_list, &grant->grant_id)) {
+        log_failure("grant revoked", subject_id);
         return BOWIE_ERR_GRANT_REVOKED;
     }
 
-    /*
-     * 4. The grant must allow the requested capability.
-     */
     if (!bowie_grant_allows(grant, capability)) {
+        log_failure("capability not allowed", subject_id);
         return BOWIE_ERR_PERMISSION;
     }
 
-    /*
-     * 5. The grant must name the peer as its subject, and the
-     *    peer must prove it holds the corresponding key.
-     */
     if (!bowie_grant_matches_subject(grant, subject_id)) {
+        log_failure("subject mismatch", subject_id);
         return BOWIE_ERR_SUBJECT_MISMATCH;
     }
 
-    if (bowie_ownership_verify(owner, challenge, signature)
-            != BOWIE_OK) {
+    if (bowie_ownership_verify(owner, challenge, signature) != BOWIE_OK) {
+        log_failure("proof of ownership invalid", subject_id);
         return BOWIE_ERR_SIGN_INVALID;
     }
 
     return BOWIE_OK;
+}
+
+/*
+ * ============================================================================
+ * SESSION BINDING
+ * ============================================================================
+ *
+ * The bind step is a no-op in this version. The session
+ * layer records its own authorization; the permission layer
+ * only decides. A future version can add a callback or a
+ * session-side flag.
+ */
+
+bowie_error_t bowie_permission_check_and_bind(
+    const bowie_grant_t       *grant,
+    const bowie_public_id_t   *owner,
+    const bowie_revoke_list_t *revoke_list,
+    uint32_t                   capability,
+    const bowie_peer_id_t     *subject_id,
+    bowie_span_t               challenge,
+    bowie_span_t               signature,
+    bowie_wtime_t              now,
+    bowie_session_t           *session)
+{
+    (void)session;
+
+    return bowie_permission_check_list(grant, owner, revoke_list,
+                                        capability, subject_id,
+                                        challenge, signature, now);
+}
+
+/*
+ * ============================================================================
+ * HELPERS
+ * ============================================================================
+ */
+
+const char *bowie_permission_error_string(bowie_error_t rc)
+{
+    switch (rc) {
+    case BOWIE_OK:
+        return "ok";
+    case BOWIE_ERR_NULL_ARG:
+        return "null argument";
+    case BOWIE_ERR_OWNER_MISMATCH:
+        return "grant issuer does not match owner";
+    case BOWIE_ERR_GRANT_EXPIRED:
+        return "grant expired";
+    case BOWIE_ERR_GRANT_REVOKED:
+        return "grant revoked";
+    case BOWIE_ERR_PERMISSION:
+        return "capability not allowed";
+    case BOWIE_ERR_SUBJECT_MISMATCH:
+        return "subject does not match grant";
+    case BOWIE_ERR_SIGN_INVALID:
+        return "proof of ownership invalid";
+    default:
+        return "unknown permission error";
+    }
 }
 
 /*
