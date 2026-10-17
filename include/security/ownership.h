@@ -41,7 +41,7 @@
  * ----------------------------------------------------------------------------
  *
  *   - No key generation. The keypair is created by the
- *     crypto/keypair module.
+ *     security/keypair module.
  *   - No challenge generation. The verifier generates the
  *     challenge; this header only verifies the response.
  *   - No session management. Session establishment is a
@@ -61,16 +61,12 @@
  * The response is the signature over the challenge. The
  * signature must be exactly BOWIE_SIGN_SIGNATURE_LEN (64)
  * bytes, which is the Ed25519 signature size. A signature of
- * any other size is rejected before the crypto layer is
+ * any other size is rejected before the security layer is
  * called.
  *
  * The public key is supplied by the verifier, not by the
  * prover: the verifier must already know the key it is
  * checking against, or the check is meaningless.
- *
- * The signature algorithm is Ed25519. The verifier does not
- * know which algorithm the prover used; the signature
- * verifies or it does not.
  *
  * The verification functions are pure: they do not allocate,
  * do not touch the network, and do not depend on global
