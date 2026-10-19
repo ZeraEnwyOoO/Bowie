@@ -226,7 +226,32 @@ void bowie_engine_default_config(bowie_engine_config_t *cfg)
     cfg->tunnel_mtu     = 0;
     cfg->log_level      = BOWIE_LOG_INFO; // Default log level
 }
+/*
+ * ============================================================================
+ * HOOKS
+ * ============================================================================
+ */
 
+bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e,
+                                     const bowie_hooks_t *hooks)
+{
+    if (e == NULL || hooks == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    
+    pthread_mutex_lock(&e->lock);
+    if (e->state != BOWIE_ENGINE_STOPPED) {
+        pthread_mutex_unlock(&e->lock);
+        return BOWIE_ERR_STATE;
+    }
+
+    // Store the hooks in the engine (you'll need to add a field to struct bowie_engine)
+    // For now, let's just validate and return OK
+    e->hooks = *hooks; 
+    
+    pthread_mutex_unlock(&e->lock);
+    return BOWIE_OK;
+}
 /*
  * ============================================================================
  * LIFECYCLE — NEW
