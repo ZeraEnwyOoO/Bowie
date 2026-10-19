@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -26,11 +26,6 @@
  * This header is internal to the Bowie library. It is not part
  * of the public API and is not installed.
  *
- * The public header (include/engine/engine.h) declares the
- * contract that callers use. This header declares the full
- * struct that the engine's implementation needs, and the
- * helper functions that the engine's source files share.
- *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
@@ -44,16 +39,13 @@
  * ----------------------------------------------------------------------------
  *
  * The struct bowie_engine is defined here, not in the public
- * header, because the caller never sees its layout. The
- * caller owns the handle but never reaches into it.
+ * header, because the caller never sees its layout.
  *
- * The engine holds its layers by pointer. The DHT and the NAT
- * layer are created by the engine and freed by the engine.
- * The tunnel and the gateway are supplied by the caller and
- * are not freed by the engine.
+ * The engine owns the DHT, the NAT layer, the session, and
+ * the gateway. It borrows the tunnel and the quota.
  *
- * The state field mirrors the public state enum. It is updated
- * under the engine's lock.
+ * The engine also holds the DHT search state and the
+ * handshake state, which are used during connection.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -66,6 +58,9 @@
  *   "bowie/err.h"           bowie_error_t
  *   "engine/engine.h"       bowie_engine_config_t,
  *                           bowie_engine_state_t
+ *   "dht/dht.h"             bowie_dht_t
+ *   "dht/search.h"          bowie_dht_search_t
+ *   "proto/handshake.h"     bowie_proto_handshake_t
  * ============================================================================
  */
 
@@ -79,6 +74,9 @@
 #include "bowie/types.h"
 #include "bowie/err.h"
 #include "engine/engine.h"
+#include "dht/dht.h"
+#include "dht/search.h"
+#include "proto/handshake.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -86,53 +84,21 @@ extern "C" {
 
 /*
  * ============================================================================
- * FORWARD DECLARATIONS
- * ============================================================================
- *
- * The engine holds pointers to layers. The layers are
- * forward-declared here; their headers are included by the
- * source files that need them.
- */
-
-typedef struct bowie_dht      bowie_dht_t;
-typedef struct bowie_nat      bowie_nat_t;
-typedef struct bowie_session  bowie_session_t;
-typedef struct bowie_gateway  bowie_gateway_t;
-typedef struct bowie_quota    bowie_quota_t;
-
-/*
- * ============================================================================
  * ENGINE STRUCT
  * ============================================================================
- *
- * The full layout of an engine. Callers see only the
- * forward declaration in bowie/types.h.
- *
- * The engine owns:
- *
- *   - the DHT (created by start, freed by free)
- *   - the NAT layer (created by start, freed by free)
- *   - the session (created by connect, freed by disconnect)
- *   - the gateway (created by connect, freed by disconnect)
- *
- * The engine borrows:
- *
- *   - the tunnel (supplied at start, not freed by the engine)
- *   - the quota (supplied by the caller, not freed by the
- *     engine)
- *
- * The lock serializes every public call. The engine is not
- * thread-safe from the caller's point of view; the lock keeps
- * its own internal state consistent.
  */
 
 struct bowie_engine {
     bowie_engine_config_t cfg;
     bowie_engine_state_t  state;
 
-    bowie_dht_t          *dht;
+    bowie_dht_t           dht;
+    bowie_dht_search_t    dht_search;
+
     bowie_nat_t          *nat;
     bowie_tun_t          *tun;
+
+    bowie_proto_handshake_t handshake;
 
     bowie_session_t      *session;
     bowie_gateway_t      *gateway;
@@ -148,17 +114,8 @@ struct bowie_engine {
  * ============================================================================
  * INTERNAL HELPERS
  * ============================================================================
- *
- * Small helpers used by engine.c and its siblings. They are
- * declared here, not in the public header, because only the
- * engine uses them.
  */
 
-/*
- * Return a stable, human-readable string for an engine state.
- *
- * The pointer is to a static string and must not be freed.
- */
 const char *bowie_engine_state_str(bowie_engine_state_t state);
 
 /*
