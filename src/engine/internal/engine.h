@@ -20,6 +20,13 @@
  * ============================================================================
  * BOWIE — ENGINE INTERNAL STATE
  * ============================================================================
+ *
+ * The private layout of struct bowie_engine.
+ *
+ * This header is internal to the Bowie library. It is not part
+ * of the public API and is not installed. Only the C files in
+ * the src/engine directory include it.
+ * ============================================================================
  */
 
 #ifndef BOWIE_ENGINE_INTERNAL_ENGINE_H
@@ -33,7 +40,8 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "bowie/hooks.h"      /* For bowie_event_record_t */
+#include "bowie/hooks.h"      /* For bowie_event_record_t and bowie_hooks_t */
+#include "bowie/config.h"     /* For bowie_config_t (log_level, etc.) */
 #include "engine/engine.h"
 #include "dht/dht.h"
 #include "nat/nat.h"
@@ -70,7 +78,7 @@ extern "C" {
 
 /*
  * ============================================================================
- * EVENT QUEUE STRUCT (Moved here to fix circular include)
+ * EVENT QUEUE STRUCT
  * ============================================================================
  */
 #define BOWIE_ENGINE_EVENT_QUEUE_CAP 64u
@@ -101,9 +109,14 @@ struct bowie_engine {
      * ----------------------------------------------------------------
      * State and configuration
      * ----------------------------------------------------------------
+     * We keep both the public config (bowie_config_t) and the
+     * engine config (bowie_engine_config_t) for flexibility.
+     * The platform sets both; the engine uses what it needs.
      */
     bowie_engine_state_t state;
-    bowie_engine_config_t cfg;
+    bowie_engine_config_t cfg;       /* Engine-specific (ports, stun, turn) */
+    bowie_config_t       base_cfg;   /* Base config (log_level, capabilities) */
+    bowie_hooks_t        hooks;      /* Installed hooks (log, event, storage) */
 
     /*
      * ----------------------------------------------------------------
