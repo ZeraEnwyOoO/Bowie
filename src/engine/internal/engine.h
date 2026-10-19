@@ -116,6 +116,7 @@
 #include "bowie/types.h"
 #include "bowie/err.h"
 #include "engine/engine.h"
+#include "engine/internal/event.h"
 #include "dht/dht.h"
 #include "nat/nat.h"
 #include "tunnel/tun_linux.h"
@@ -308,6 +309,7 @@ struct bowie_engine {
     bowie_revoke_list_t revoke_list;
     bowie_quota_t       quota;
 
+    bowie_engine_event_queue_t events; 
     /*
      * ----------------------------------------------------------------
      * Current connection
