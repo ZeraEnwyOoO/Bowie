@@ -47,9 +47,8 @@
  *     module does the work.
  *   - No quota. The engine holds the quota; the quota module
  *     does the work.
- *   - No UI or CLI. The engine has no command line, no menu,
- *     no logging output, and no output of any kind. A caller
- *     that wants a UI builds it on top.
+ *   - No UI. The engine has no command line, no menu, and no
+ *     output. A caller that wants a UI builds it on top.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -92,10 +91,7 @@
  *   "bowie/types.h"         bowie_engine_t, bowie_peer_id_t,
  *                           bowie_addr_t, bowie_tun_t
  *   "bowie/err.h"           bowie_error_t
- *   "bowie/config.h"        bowie_log_level_t, bowie_cap_t
- *   "bowie/hooks.h"         bowie_hooks_t
- *   "dht/types.h"           bowie_dht_node_t
- *   "security/sign.h"       bowie_sign_signature_t
+ *   "bowie/hooks.h"         bowie_hooks_t, bowie_event_record_t
  * ============================================================================
  */
 
@@ -107,10 +103,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "bowie/config.h"
 #include "bowie/hooks.h"
-#include "dht/types.h"
-#include "security/sign.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -120,14 +113,6 @@ extern "C" {
  * ============================================================================
  * CONFIGURATION
  * ============================================================================
- *
- * The engine config carries the fields the engine needs from
- * the caller. The DHT config and the NAT config are built
- * from these values by bowie_engine_new().
- *
- * A zeroed config is valid and means "use library defaults
- * everywhere". The helper bowie_engine_default_config()
- * returns a sane starting point.
  */
 
 typedef struct bowie_engine_config {
@@ -144,10 +129,20 @@ typedef struct bowie_engine_config {
     const char *turn_pass;
 
     uint32_t    tunnel_mtu;
-
-    /* Log level for the engine's internal log hook. */
-    bowie_log_level_t log_level;
 } bowie_engine_config_t;
+
+/*
+ * ============================================================================
+ * LIFECYCLE
+ * ============================================================================
+ */
+
+void bowie_engine_default_config(bowie_engine_config_t *cfg);
+
+bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg,
+                               bowie_engine_t **out);
+
+void bowie_engine_free(bowie_engine_t *e);
 
 /*
  * ============================================================================
@@ -164,58 +159,18 @@ typedef struct bowie_engine_config {
  * and storage requests use the platform storage.
  */
 
-bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e,
-                                     const bowie_hooks_t *hooks);
-
 /*
- * ============================================================================
- * LIFECYCLE
- * ============================================================================
- */
-
-/*
- * Fill a config with default values.
+ * Install the hook set.
  *
- * Defaults: every port zero (OS chooses), allow_server 0,
- * every server field NULL, tunnel_mtu 0 (use tunnel default).
- * The log level defaults to BOWIE_LOG_INFO.
- *
- * Passing NULL is a no-op.
- */
-void bowie_engine_default_config(bowie_engine_config_t *cfg);
-
-/*
- * Create an engine handle.
- *
- * The config is copied. String fields are borrowed: the
- * caller must keep every non-NULL string alive for the
- * lifetime of the engine.
- *
- * On success, *out points to the new engine handle. The
- * engine is in STOPPED state and owns no threads or sockets.
- * The caller must call bowie_engine_free() on it when done.
- *
- * On failure, *out is set to NULL.
+ * The engine copies the set. The caller may free the set
+ * after the call returns.
  *
  * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if out is NULL.
- * Returns BOWIE_ERR_INVAL if the config is inconsistent.
- * Returns a CRYPTO-class error if the identity keypair cannot
- *   be generated.
- * Returns BOWIE_ERR_NOMEM if allocation fails.
+ * Returns BOWIE_ERR_NULL_ARG if e or hooks is NULL.
+ * Returns BOWIE_ERR_STATE if the engine is not STOPPED.
  */
-bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg,
-                               bowie_engine_t **out);
-
-/*
- * Free an engine handle.
- *
- * If the engine is running, it is stopped first. The config
- * strings are not freed; they belong to the caller.
- *
- * Passing NULL is a no-op.
- */
-void bowie_engine_free(bowie_engine_t *e);
+bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e,
+                                     const bowie_hooks_t *hooks);
 
 /*
  * ============================================================================
@@ -223,49 +178,10 @@ void bowie_engine_free(bowie_engine_t *e);
  * ============================================================================
  */
 
-/*
- * Start the engine.
- *
- * The tunnel is supplied by the caller. The engine does not
- * own the tunnel; the caller must keep it open for the
- * lifetime of the engine.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e is NULL.
- * Returns BOWIE_ERR_STATE if the engine is not STOPPED.
- * Returns BOWIE_ERR_INVAL if the tunnel is NULL.
- * Returns BOWIE_ERR_NETWORK if the DHT or signaling socket
- *   cannot be opened.
- */
 bowie_error_t bowie_engine_start(bowie_engine_t *e,
                                  bowie_tun_t *tun);
 
-/*
- * Stop the engine.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e is NULL.
- */
 bowie_error_t bowie_engine_stop(bowie_engine_t *e);
-
-/*
- * ============================================================================
- * BOOTSTRAP
- * ============================================================================
- */
-
-/*
- * Add a bootstrap node to the DHT and send a PING to kickstart it.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e or ip is NULL.
- * Returns BOWIE_ERR_STATE if the engine is not STARTED.
- * Returns BOWIE_ERR_INVAL if the IP string is invalid.
- * Returns BOWIE_ERR_NETWORK if the PING could not be sent.
- */
-bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
-                                         const char *ip,
-                                         uint16_t port);
 
 /*
  * ============================================================================
@@ -273,15 +189,6 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
  * ============================================================================
  */
 
-/*
- * Search for a peer by ID using the DHT.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e, peer_id, or out_node is NULL.
- * Returns BOWIE_ERR_NOT_STARTED if the engine is not started.
- * Returns BOWIE_ERR_NOT_FOUND if no node is found.
- * Returns BOWIE_ERR_TIMEOUT if the search times out.
- */
 bowie_error_t bowie_engine_search_peer(bowie_engine_t *e,
                                        const bowie_peer_id_t *peer_id,
                                        bowie_dht_node_t *out_node,
@@ -293,62 +200,14 @@ bowie_error_t bowie_engine_search_peer(bowie_engine_t *e,
  * ============================================================================
  */
 
-/*
- * Connect to a peer.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e or peer is NULL.
- * Returns BOWIE_ERR_NOT_STARTED if the engine is not started.
- * Returns BOWIE_ERR_STATE if the engine is not in STARTED state.
- * Returns BOWIE_ERR_NOT_FOUND if the peer cannot be found.
- * Returns BOWIE_ERR_TIMEOUT if the connection times out.
- * Returns BOWIE_ERR_NETWORK if the NAT layer fails.
- * Returns BOWIE_ERR_SIGN_INVALID if the handshake fails.
- */
 bowie_error_t bowie_engine_connect(bowie_engine_t *e,
                                    const bowie_peer_id_t *peer,
                                    uint32_t timeout_ms);
 
-/*
- * Accept a connection from a peer.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e is NULL.
- * Returns BOWIE_ERR_NOT_STARTED if the engine is not started.
- * Returns BOWIE_ERR_STATE if the engine is not in STARTED state.
- * Returns BOWIE_ERR_TIMEOUT if no peer connects in time.
- * Returns BOWIE_ERR_NETWORK if the NAT layer fails.
- */
 bowie_error_t bowie_engine_accept(bowie_engine_t *e,
                                   uint32_t timeout_ms);
 
-/*
- * Disconnect from the current peer.
- *
- * Returns BOWIE_OK on success.
- * Returns BOWIE_ERR_NULL_ARG if e is NULL.
- * Returns BOWIE_ERR_STATE if the engine is not RUNNING.
- */
 bowie_error_t bowie_engine_disconnect(bowie_engine_t *e);
-
-/*
- * ============================================================================
- * EVENTS
- * ============================================================================
- */
-
-/*
- * Drain the event queue through the installed event hook.
- */
-void bowie_engine_drain_events(bowie_engine_t *e);
-
-/*
- * Poll one event from the queue.
- *
- * Returns 1 when an event was copied, 0 when the queue is empty.
- */
-int bowie_engine_poll_event(bowie_engine_t *e,
-                            bowie_event_record_t *out);
 
 /*
  * ============================================================================
@@ -385,12 +244,50 @@ const char *bowie_engine_state_name(bowie_engine_state_t state);
 
 /*
  * ============================================================================
+ * EVENTS
+ * ============================================================================
+ *
+ * The engine records structured events as it runs. The
+ * caller drains them with bowie_engine_drain_events().
+ */
+
+/*
+ * Drain the event queue through the installed event hook.
+ *
+ * The engine calls the event hook once per queued event. The
+ * queue is emptied. The hook runs without the engine lock
+ * held, so it may call back into the public API.
+ *
+ * Passing NULL for e is a no-op.
+ */
+void bowie_engine_drain_events(bowie_engine_t *e);
+
+/*
+ * Poll one event from the queue.
+ *
+ * The function pops the oldest event and copies it into the
+ * caller's record. A caller that wants to drain the queue
+ * without a hook calls this function in a loop until it
+ * returns 0.
+ *
+ * Returns 1 when an event was copied, 0 when the queue is
+ * empty.
+ *
+ * Passing NULL for e or out is a no-op and returns 0.
+ */
+int bowie_engine_poll_event(bowie_engine_t *e,
+                            bowie_event_record_t *out);
+
+/*
+ * ============================================================================
  * INFO
  * ============================================================================
  */
 
 uint16_t bowie_engine_dht_port(const bowie_engine_t *e);
+
 uint16_t bowie_engine_signal_port(const bowie_engine_t *e);
+
 size_t bowie_engine_dht_node_count(const bowie_engine_t *e);
 
 /*
