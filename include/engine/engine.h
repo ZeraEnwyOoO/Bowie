@@ -249,7 +249,20 @@ void bowie_engine_free(bowie_engine_t *e);
  */
 bowie_error_t bowie_engine_start(bowie_engine_t *e,
                                  bowie_tun_t *tun);
-
+/*
+ * Add a bootstrap node to the DHT.
+ *
+ * The engine uses the bootstrap node to join the DHT
+ * network. The IP is a string (e.g. "192.168.1.1") and the
+ * port is the UDP port the DHT listens on.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if e or ip is NULL.
+ * Returns BOWIE_ERR_STATE if the engine is not STARTED.
+ */
+bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
+                                         const char *ip,
+                                         uint16_t port);
 /*
  * Stop the engine.
  *
