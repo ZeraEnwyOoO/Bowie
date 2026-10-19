@@ -85,7 +85,7 @@
  */
 
 #include <openssl/evp.h>
-#include <openssl/kdf.h>   /* ← បន្ថែមនេះឱ្យច្បាស់ */
+#include <openssl/kdf.h>    
 #include <openssl/crypto.h>
 
 #include <limits.h>
@@ -101,8 +101,7 @@
  * CONSTANTS
  * ============================================================================
  */
-
-#define BOWIE_SESSION_KEY_LEN       32
+ 
 #define BOWIE_SESSION_NONCE_LEN     12
 #define BOWIE_SESSION_TAG_LEN       16
 
