@@ -104,6 +104,8 @@
 #include "bowie/types.h"
 #include "bowie/err.h"
 #include "bowie/hooks.h"
+#include "dht/node.h"         /* Fix: For bowie_dht_node_t */
+#include "security/sign.h"    /* Fix: For bowie_sign_signature_t */
 
 #ifdef __cplusplus
 extern "C" {
