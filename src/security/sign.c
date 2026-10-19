@@ -179,6 +179,51 @@ bowie_error_t bowie_security_verify(
 }
 
 /*
+ *=============================================================================
+ *bowie security sign generate
+ *=============================================================================
+ */
+bowie_error_t bowie_security_sign_generate(
+    bowie_sign_public_t *out_public,
+    bowie_sign_private_t *out_private)
+{
+    if (out_public == NULL || out_private == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
+    if (ctx == NULL) return BOWIE_ERR_CRYPTO;
+
+    if (EVP_PKEY_keygen_init(ctx) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    EVP_PKEY *pkey = NULL;
+    if (EVP_PKEY_keygen(ctx, &pkey) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+
+    size_t pub_len = BOWIE_SIGN_PUBLIC_LEN;
+    size_t priv_len = BOWIE_SIGN_PRIVATE_LEN;
+
+    if (EVP_PKEY_get_raw_public_key(pkey, out_public->bytes, &pub_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return BOWIE_ERR_CRYPTO;
+    }
+    if (EVP_PKEY_get_raw_private_key(pkey, out_private->bytes, &priv_len) != 1) {
+        EVP_PKEY_free(pkey);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    EVP_PKEY_free(pkey);
+    return BOWIE_OK;
+}
+
+/*
  * ============================================================================
  * END OF SECURITY SIGN IMPLEMENTATION
  * ============================================================================
