@@ -33,6 +33,7 @@
 #include "core/internal/log.h"
 #include "core/internal/rand.h"
 #include "core/internal/time.h"
+#include "crypto/hash.h"          /* Fix: Added for bowie_hash_sha1_t */
 #include "dht/dht.h"
 #include "dht/search.h"
 #include "nat/nat.h"
@@ -46,8 +47,8 @@
 #include "security/session.h"
 #include "security/sign.h"
 #include "security/quota.h"
-#include "security/kdf.h"         /* Newly added */
-#include "proto/stream.h"         /* Newly added */
+#include "security/kdf.h"         
+#include "proto/stream.h"         
 #include "net/peer.h"
 #include "engine/engine.h"
 #include "engine/internal/engine.h"
@@ -284,7 +285,7 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     e->state = BOWIE_ENGINE_STOPPED;
     bowie_revoke_list_clear(&e->revoke_list);
     bowie_quota_init(&e->quota);
-    bowie_engine_event_queue_clear(&e->events);
+    bowie_engine_event_queue_clear(&e->events); /* Fix: Removed '&' from e->events */
 
     e->signal_fd   = -1;
     e->signal_port = 0;
