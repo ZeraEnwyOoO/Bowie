@@ -24,7 +24,7 @@
  * The private layout of struct bowie_engine.
  *
  * This header is internal to the Bowie library. It is not part
- * of the public API and is not installed. Only src/engine/*.c
+ * of the public API and is not installed. Only src/engine.c
  * includes it.
  * ============================================================================
  */
