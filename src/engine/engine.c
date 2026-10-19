@@ -366,7 +366,135 @@ static bowie_error_t exchange_x25519(bowie_proto_stream_t *stream,
     return BOWIE_OK;
 }
 
+    /*
+     * Step 3 & 4: X25519 Exchange.
+     * We need a byte stream over the NAT connection.
+     * We initialize it, install the callback, and perform the exchange.
+     */
+    {
+        bowie_proto_stream_t stream;
+        bowie_keypair_public_t  local_pub, remote_pub;
+        bowie_keypair_private_t local_priv;
+        bowie_keypair_shared_t  shared;
+        uint8_t                 session_key[BOWIE_SESSION_KEY_LEN];
+        bowie_session_id_t      session_id;
 
+        /* Initialize the stream over the NAT connection */
+        rc = bowie_proto_stream_init(&stream, e->nat);
+        if (rc != BOWIE_OK) {
+            goto fail_nat_connected;
+        }
+        
+        /* Install the stream's receive callback in the NAT layer */
+        (void)bowie_nat_set_recv(e->nat, bowie_proto_stream_on_nat_data, &stream);
+
+        /* Generate our local X25519 keypair */
+        rc = bowie_security_keypair_generate(&local_pub, &local_priv);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        /* Exchange public keys (Initiator = true) */
+        rc = exchange_x25519(&stream, &local_pub, &remote_pub, 1);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        /* Compute shared secret */
+        rc = bowie_security_keypair_shared(&local_priv, &remote_pub, &shared);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        /* Derive the session key using HKDF */
+        rc = bowie_security_kdf_hkdf_sha256(
+            shared.bytes, BOWIE_KEYPAIR_SHARED_LEN,
+            NULL, 0,
+            kSessionInfo, sizeof(kSessionInfo) - 1,
+            session_key, BOWIE_SESSION_KEY_LEN);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        /* Create session ID and session */
+        rc = bowie_rand_secure_bytes(session_id.bytes, BOWIE_SESSION_ID_LEN);
+        if (rc == BOWIE_OK) {
+            rc = bowie_session_new_from_key(
+                session_key, BOWIE_SESSION_KEY_LEN,
+                &session_id, &e->session);
+        }
+        
+        bowie_proto_stream_destroy(&stream);
+
+        if (rc != BOWIE_OK) {
+            goto fail_nat_connected;
+        }
+    }
+    /*
+     * Step 3 & 4: X25519 Exchange.
+     * The responder receives first, then sends.
+     */
+    {
+        bowie_proto_stream_t stream;
+        bowie_keypair_public_t  local_pub, remote_pub;
+        bowie_keypair_private_t local_priv;
+        bowie_keypair_shared_t  shared;
+        uint8_t                 session_key[BOWIE_SESSION_KEY_LEN];
+        bowie_session_id_t      session_id;
+
+        rc = bowie_proto_stream_init(&stream, e->nat);
+        if (rc != BOWIE_OK) {
+            goto fail_nat_connected;
+        }
+        
+        (void)bowie_nat_set_recv(e->nat, bowie_proto_stream_on_nat_data, &stream);
+
+        rc = bowie_security_keypair_generate(&local_pub, &local_priv);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        /* Exchange public keys (Initiator = false) */
+        rc = exchange_x25519(&stream, &local_pub, &remote_pub, 0);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        rc = bowie_security_keypair_shared(&local_priv, &remote_pub, &shared);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        rc = bowie_security_kdf_hkdf_sha256(
+            shared.bytes, BOWIE_KEYPAIR_SHARED_LEN,
+            NULL, 0,
+            kSessionInfo, sizeof(kSessionInfo) - 1,
+            session_key, BOWIE_SESSION_KEY_LEN);
+        if (rc != BOWIE_OK) {
+            bowie_proto_stream_destroy(&stream);
+            goto fail_nat_connected;
+        }
+
+        rc = bowie_rand_secure_bytes(session_id.bytes, BOWIE_SESSION_ID_LEN);
+        if (rc == BOWIE_OK) {
+            rc = bowie_session_new_from_key(
+                session_key, BOWIE_SESSION_KEY_LEN,
+                &session_id, &e->session);
+        }
+        
+        bowie_proto_stream_destroy(&stream);
+
+        if (rc != BOWIE_OK) {
+            goto fail_nat_connected;
+        }
+    }
 /*
  * ============================================================================
  * LIFECYCLE — DEFAULTS
