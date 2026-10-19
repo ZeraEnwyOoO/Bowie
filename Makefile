@@ -53,15 +53,6 @@ RANLIB  ?= ranlib
 # ----------------------------------------------------------------------------
 # Platform selection
 # ----------------------------------------------------------------------------
-#
-# The platform backend is selected at build time.
-#
-#   linux     POSIX + Linux (default)
-#   android   POSIX + Linux + Android
-#
-# The Android build requires the Android NDK toolchain, which
-# the host Makefile does not set up. An Android build is done
-# by the NDK's own build system, not by this Makefile.
 
 PLATFORM ?= linux
 
@@ -93,19 +84,6 @@ endif
 # ----------------------------------------------------------------------------
 # NAT backend selection
 # ----------------------------------------------------------------------------
-#
-# The NAT layer is implemented by a backend. The backend is
-# selected at build time.
-#
-# The only backend in v1 is libjuice, an ICE library. It is
-# built from src/nat/nat_libjuice.c and links against -ljuice.
-#
-# The core NAT code (src/nat/nat.c) is always built. It does
-# not depend on the backend; it dispatches to it.
-#
-# To build with libjuice:
-#
-#   make NAT_BACKEND=libjuice
 
 NAT_BACKEND ?= libjuice
 
@@ -119,15 +97,6 @@ endif
 # ----------------------------------------------------------------------------
 # Tunnel backend selection
 # ----------------------------------------------------------------------------
-#
-# The Tunnel layer creates a virtual network interface (TUN).
-# The interface is platform-specific.
-#
-# The core Tunnel code (src/tunnel/mtu.c, src/tunnel/packet.c)
-# is always built. It is platform-independent.
-#
-#   linux     Uses /dev/net/tun and ioctl (default).
-#   android   Uses VpnService (deferred to Phase 12).
 
 TUNNEL_BACKEND ?= linux
 
@@ -143,38 +112,22 @@ endif
 # Flags
 # ----------------------------------------------------------------------------
 
-# Strict, portable, C11. Werror is on for the prototype so that
-# a warning cannot be ignored by accident.
 CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -Werror
 CFLAGS  += -g -O0
 CFLAGS  += -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
 CFLAGS  += $(PLATFORM_DEFS)
 
-# Include paths. The order matters: public headers first, then
-# source tree so that internal headers can be included by their
-# path from the repository root (e.g. "core/internal/endian.h").
 CFLAGS  += -Iinclude
 CFLAGS  += -Isrc
 CFLAGS  += -Itests
-
-# Header dependency generation.
 CFLAGS  += -MMD -MP
 
-# OpenSSL. The project depends on libcrypto for all crypto
-# operations. libssl is not needed; it is only required for TLS,
-# which Bowie does not use.
+# OpenSSL
 CFLAGS  += $(shell pkg-config --cflags libcrypto)
 LDLIBS  += $(shell pkg-config --libs libcrypto)
 
-# Check framework on Linux.
-#
-# -lsubunit is needed only when Check was built with the
-# subunit protocol. It is not present on every system, so it
-# is not included by default. If your system has it and the
-# link fails without it, add it back to LDLIBS.
+# Check framework & NAT dependencies
 LDLIBS  += -lcheck -lm -lpthread -lrt
-
-# NAT backend libraries.
 LDLIBS  += $(NAT_LIBS)
 
 # ----------------------------------------------------------------------------
@@ -190,12 +143,8 @@ LIB         := $(BUILD_DIR)/libbowie.a
 # Sources
 # ----------------------------------------------------------------------------
 #
-# Library sources. Only files that exist are listed here. When a
-# new source file is added to src/, add it to this list.
+# ⚠️ UPDATED: Added new engine, stream, and kdf files below
 #
-# The list is explicit rather than wildcard so that a file that
-# is accidentally added to the tree does not silently enter the
-# build.
 
 LIB_SRCS := \
     src/api/version.c \
@@ -231,6 +180,7 @@ LIB_SRCS := \
     src/proto/message.c \
     src/proto/framing.c \
     src/proto/handshake.c \
+    src/proto/stream.c \
     src/nat/nat.c \
     src/tunnel/mtu.c \
     src/tunnel/packet.c \
@@ -241,27 +191,24 @@ LIB_SRCS := \
     src/security/permission.c \
     src/security/sign.c \
     src/security/keypair.c \
+    src/security/kdf.c \
     src/gateway/gateway.c \
     src/gateway/ip_forward.c \
     src/gateway/conntrack.c \
     src/gateway/route.c \
+    src/engine/state.c \
+    src/engine/event.c \
+    src/engine/signal.c \
+    src/engine/engine.c \
     $(PLATFORM_SRCS) \
     $(NAT_SRCS) \
     $(TUNNEL_SRCS)
-
-# Library objects. The path is rewritten so that the object tree
-# mirrors the source tree under build/obj/.
 
 LIB_OBJS := $(LIB_SRCS:src/%.c=$(OBJ_DIR)/%.o)
 
 # ----------------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------------
-#
-# Each test is a standalone binary linked against the library.
-# A test name is its path under tests/unit/, without the .c
-# suffix. The binary is placed under build/tests/ with the same
-# path.
 
 UNIT_TEST_SRCS := \
     tests/unit/api/test_version.c \
@@ -328,11 +275,6 @@ all: $(LIB)
 # ----------------------------------------------------------------------------
 # Library
 # ----------------------------------------------------------------------------
-#
-# The library is built from $(LIB_OBJS). Each object is built
-# from its source with the rule below. If a source file is
-# added to $(LIB_SRCS) and its object does not yet exist, the
-# library is rebuilt.
 
 $(LIB): $(LIB_OBJS)
 	@mkdir -p $(dir $@)
@@ -348,10 +290,6 @@ $(OBJ_DIR)/%.o: src/%.c
 # ----------------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------------
-#
-# Each test binary depends on the library. If the library is
-# out of date, it is rebuilt first. The test rule then links
-# the test against the library.
 
 .PHONY: test
 test: $(UNIT_TEST_BINS)
@@ -422,10 +360,6 @@ help:
 # ----------------------------------------------------------------------------
 # Verbose
 # ----------------------------------------------------------------------------
-#
-# Setting V=1 disables the @ prefix on the compile and link
-# lines, so every command is echoed. This is the same convention
-# the Linux kernel and many other projects use.
 
 ifeq ($(V),1)
 Q :=
@@ -436,17 +370,5 @@ endif
 # ----------------------------------------------------------------------------
 # Header dependencies
 # ----------------------------------------------------------------------------
-#
-# Generate a .d file for each object that lists the headers it
-# includes. The .d files are included below so that make knows
-# to rebuild an object when a header changes.
-#
-# The -MMD flag tells the compiler to write the dependency file
-# next to the object. The -MP flag adds phony targets for the
-# headers, so that a header that is deleted does not break the
-# build.
-#
-# The dependency files are included with -include, so that a
-# missing .d file is not an error on the first build.
 
 -include $(LIB_OBJS:.o=.d)
