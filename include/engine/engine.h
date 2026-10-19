@@ -479,7 +479,82 @@ uint16_t bowie_engine_signal_port(const bowie_engine_t *e);
  * Returns 0 for NULL or for a stopped engine.
  */
 size_t bowie_engine_dht_node_count(const bowie_engine_t *e);
+/*
+ * ============================================================================
+ * HOOKS (Log, Event, Storage)
+ * ============================================================================
+ *
+ * The engine forwards its log lines, its events, and its
+ * storage requests to the caller through a hook set. The hook
+ * set is the same one declared in bowie/hooks.h.
+ *
+ * The hook set is installed after the engine is created and
+ * before it is started. A hook set that is not installed is
+ * treated as "no hooks": log lines and events are dropped,
+ * and storage requests use the platform storage.
+ *
+ * The engine takes a copy of the hook set. The caller may
+ * free the set after the call returns.
+ */
 
+/*
+ * Install the hook set.
+ *
+ * The engine copies the set. The caller may free the set
+ * after the call returns.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if e or hooks is NULL.
+ * Returns BOWIE_ERR_STATE if the engine is not STOPPED.
+ */
+bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e,
+                                     const bowie_hooks_t *hooks);
+
+/*
+ * ============================================================================
+ * EVENTS
+ * ============================================================================
+ *
+ * The engine records structured events as it runs. The
+ * caller drains them with bowie_engine_drain_events().
+ *
+ * The drain function calls the event hook for each event in
+ * the queue. A caller that does not want events does not
+ * install an event hook; the events are recorded but
+ * dropped.
+ *
+ * A caller that wants to inspect the events without a hook
+ * uses bowie_engine_poll_event() one at a time. The two
+ * functions are mutually exclusive: a caller uses one or the
+ * other.
+ */
+
+/*
+ * Drain the event queue through the installed event hook.
+ *
+ * The engine calls the event hook once per queued event. The
+ * queue is emptied. The hook runs without the engine lock
+ * held, so it may call back into the public API.
+ *
+ * Passing NULL for e is a no-op.
+ */
+void bowie_engine_drain_events(bowie_engine_t *e);
+
+/*
+ * Poll one event from the queue.
+ *
+ * The function pops the oldest event and copies it into the
+ * caller's record. A caller that wants to drain the queue
+ * without a hook calls this function in a loop until it
+ * returns 0.
+ *
+ * Returns 1 when an event was copied, 0 when the queue is
+ * empty.
+ *
+ * Passing NULL for e or out is a no-op and returns 0.
+ */
+int bowie_engine_poll_event(bowie_engine_t *e,
+                            bowie_event_record_t *out);
 /*
  * ============================================================================
  * END OF ENGINE
