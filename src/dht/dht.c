@@ -18,85 +18,208 @@
 
 /*
  * ============================================================================
- * BOWIE — DHT ENGINE IMPLEMENTATION
+ * BOWIE — DHT ENGINE (IMPLEMENTATION)
  * ============================================================================
  *
- * The orchestration layer for the DHT. The file is organized
- * in three parts:
+ * Implementation of the DHT engine declared in dht/dht.h.
  *
- *   1. Lifecycle and query building.
- *   2. Message handling.
- *   3. Maintenance.
+ * The engine owns a background thread. The thread reads
+ * packets from a UDP socket, parses them, handles them, and
+ * sends responses. The caller drives the engine through the
+ * public functions; the thread runs on its own.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No network.
- *   - No allocation.
- *   - No thread safety.
- *   - No search orchestration.
+ *   - No allocation of the routing or storage arrays. The
+ *     caller supplies them.
+ *   - No search orchestration. The search state machine is
+ *     in search.h.
+ *   - No persistence.
  *
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The engine initializes the four sub-states (routing,
- * storage, token, security) and holds them. The arrays for
- * the routing table and the storage are caller-supplied.
+ * The background thread is a simple loop:
  *
- * The query builder fills a message struct. The message layer
- * serializes it. The caller sends the serialized bytes.
+ *   1. poll() on the socket with a timeout
+ *   2. recvfrom() if the socket is readable
+ *   3. parse the packet into a message
+ *   4. call bowie_dht_handle_message()
+ *   5. if a response is produced, serialize and send it
+ *   6. run the periodic tick
+ *   7. check the stop flag
  *
- * The engine generates a random transaction id for each
- * query. The transaction id is two bytes; the caller may
- * override it by passing a non-NULL tid.
- *
- * The engine's local ID is used as the sender ID in every
- * message it sends.
+ * The arenas used by the thread are stored in the engine,
+ * not as static variables. This allows two DHT engines to
+ * run in the same process without sharing buffers.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
  * ----------------------------------------------------------------------------
  *
- *   <stdint.h>                   uint8_t, uint32_t
- *   <stddef.h>                   size_t
- *   <string.h>                   memset, memcpy
- *   "bowie/types.h"              bowie_addr_t, bowie_mtime_t
- *   "bowie/err.h"                error codes
- *   "core/internal/rand.h"       bowie_rand_secure_bytes
- *   "dht/types.h"                node id, info hash, token
- *   "dht/node.h"                 the node struct
- *   "dht/routing.h"              the routing table
- *   "dht/storage.h"              the storage
- *   "dht/token.h"                the token state
- *   "dht/security.h"             the security state
- *   "dht/message.h"              the message struct
- *   "dht/config.h"               the config
- *   "dht/dht.h"                  the declarations
+ *   <errno.h>                   errno
+ *   <poll.h>                    poll, POLLIN
+ *   <pthread.h>                 pthread_create, pthread_join
+ *   <stdlib.h>                  calloc, free, rand
+ *   <string.h>                  memset, memcpy
+ *   <sys/socket.h>              socket, bind, recvfrom, sendto
+ *   <netinet/in.h>              sockaddr_in, INADDR_ANY
+ *   <arpa/inet.h>               htonl, htons, ntohs
+ *   <unistd.h>                  close
+ *   "bowie/types.h"             types
+ *   "bowie/err.h"               errors
+ *   "core/internal/time.h"      bowie_time_monotonic_ms
+ *   "dht/dht.h"                 declarations
  * ============================================================================
  */
 
-#include <stdint.h>
-#include <stddef.h>
+#include <errno.h>
+#include <poll.h>
+#include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
-#include "core/internal/rand.h"
-#include "dht/types.h"
-#include "dht/node.h"
-#include "dht/routing.h"
-#include "dht/storage.h"
-#include "dht/token.h"
-#include "dht/security.h"
-#include "dht/message.h"
-#include "dht/config.h"
+#include "core/internal/time.h"
 #include "dht/dht.h"
 
 /*
  * ============================================================================
- * PART 1 — LIFECYCLE
+ * CONSTANTS
+ * ============================================================================
+ */
+
+#define BOWIE_DHT_PACKET_MAX     1500
+#define BOWIE_DHT_POLL_TIMEOUT   100   /* ms */
+#define BOWIE_DHT_TICK_INTERVAL  1000  /* ms */
+
+/*
+ * ============================================================================
+ * INTERNAL — THREAD
+ * ============================================================================
+ */
+
+static void *dht_thread_main(void *arg)
+{
+    bowie_dht_t *dht = (bowie_dht_t *)arg;
+    uint8_t      buf[BOWIE_DHT_PACKET_MAX];
+    bowie_mtime_t last_tick_ms = 0;
+    struct pollfd pfd;
+
+    pfd.fd     = dht->socket_fd;
+    pfd.events = POLLIN;
+
+    while (!dht->stop_requested) {
+        int rc;
+
+        rc = poll(&pfd, 1, BOWIE_DHT_POLL_TIMEOUT);
+
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        if (rc > 0 && (pfd.revents & POLLIN)) {
+            struct sockaddr_storage from;
+            socklen_t from_len = sizeof(from);
+            ssize_t   n;
+            bowie_addr_t from_addr;
+            bowie_span_t input;
+            bowie_dht_message_t msg;
+            bowie_dht_message_t response;
+            int has_response = 0;
+
+            n = recvfrom(dht->socket_fd, buf, sizeof(buf), 0,
+                         (struct sockaddr *)&from, &from_len);
+
+            if (n <= 0) {
+                continue;
+            }
+
+            /* Reset the arenas for the new packet. */
+            dht->benc_arena.values_used  = 0;
+            dht->benc_arena.entries_used = 0;
+            dht->benc_arena.lenient_used = 0;
+            dht->msg_arena.nodes_used    = 0;
+            dht->msg_arena.peers_used    = 0;
+
+            memset(&msg, 0, sizeof(msg));
+            memset(&response, 0, sizeof(response));
+
+            input.data = buf;
+            input.len  = (size_t)n;
+
+            memset(&from_addr, 0, sizeof(from_addr));
+
+            if (from.ss_family == AF_INET) {
+                struct sockaddr_in *sin = (struct sockaddr_in *)&from;
+                memcpy(from_addr.addr, &sin->sin_addr, 4);
+                from_addr.port   = ntohs(sin->sin_port);
+                from_addr.family = BOWIE_AF_INET;
+            } else if (from.ss_family == AF_INET6) {
+                struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&from;
+                memcpy(from_addr.addr, &sin6->sin6_addr, 16);
+                from_addr.port   = ntohs(sin6->sin6_port);
+                from_addr.family = BOWIE_AF_INET6;
+            } else {
+                continue;
+            }
+
+            rc = bowie_dht_message_parse(input, &dht->benc_arena,
+                                          &dht->msg_arena, &msg);
+
+            if (rc != BOWIE_OK) {
+                continue;
+            }
+
+            rc = bowie_dht_handle_message(dht, &msg, &from_addr,
+                                           bowie_time_monotonic_ms(),
+                                           &dht->msg_arena,
+                                           &response,
+                                           &has_response);
+
+            if (rc == BOWIE_OK && has_response) {
+                bowie_bencode_writer_t writer;
+                uint8_t out[BOWIE_DHT_PACKET_MAX];
+
+                bowie_bencode_writer_init(&writer, out, sizeof(out));
+
+                rc = bowie_dht_message_serialize(&response, &writer);
+
+                if (rc == BOWIE_OK) {
+                    sendto(dht->socket_fd, out, writer.pos, 0,
+                           (struct sockaddr *)&from, from_len);
+                }
+            }
+        }
+
+        /* Periodic tick. */
+        {
+            bowie_mtime_t now_ms = bowie_time_monotonic_ms();
+
+            if (now_ms - last_tick_ms >= BOWIE_DHT_TICK_INTERVAL) {
+                bowie_dht_tick(dht, now_ms, NULL, NULL);
+                last_tick_ms = now_ms;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+/*
+ * ============================================================================
+ * LIFECYCLE
  * ============================================================================
  */
 
@@ -113,87 +236,177 @@ bowie_error_t bowie_dht_init(
     size_t                          rate_limits_cap,
     bowie_mtime_t                   now_ms)
 {
-    if (dht == NULL || config == NULL || local_id == NULL) {
+    bowie_error_t rc;
+
+    if (dht == NULL || config == NULL || local_id == NULL ||
+        hashes == NULL || peers == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
-    if (hashes == NULL || hashes_cap == 0u) {
+
+    if (config->store_metadata && metadata == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
-    if (peers == NULL || peers_cap == 0u) {
+
+    if (config->sec_level == BOWIE_DHT_SEC_STRICT &&
+        rate_limits == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
 
     memset(dht, 0, sizeof(*dht));
 
-    /*
-     * Copy the config and normalize it. A config that
-     * normalize cannot fix is reported.
-     */
+    /* Normalize the config. */
     dht->config = *config;
-    bowie_error_t rc = bowie_dht_config_normalize(&dht->config);
+    rc = bowie_dht_config_normalize(&dht->config);
     if (rc != BOWIE_OK) {
         return rc;
     }
+
+    /* Validate the config. */
     rc = bowie_dht_config_validate(&dht->config);
     if (rc != BOWIE_OK) {
         return rc;
     }
 
+    /* Copy the local ID. */
     dht->local_id = *local_id;
 
-    /*
-     * Initialize the routing table. The table starts with
-     * one bucket.
-     */
+    /* Initialize the routing table. */
     bowie_dht_routing_init(&dht->routing, &dht->local_id);
 
-    /*
-     * Initialize the storage. The config fields are
-     * copied; the arrays are borrowed.
-     */
-    bowie_dht_storage_config_t scfg;
-    memset(&scfg, 0, sizeof(scfg));
-    scfg.max_hashes         = dht->config.max_hashes;
-    scfg.max_peers_per_hash = dht->config.max_peers_per_hash;
-    scfg.peer_lifetime_s    = dht->config.peer_lifetime_s;
-    scfg.store_metadata     = dht->config.store_metadata;
+    /* Initialize the storage. */
+    {
+        bowie_dht_storage_config_t scfg;
 
-    rc = bowie_dht_storage_init(&dht->storage, &scfg,
-                                hashes, hashes_cap,
-                                peers, peers_cap,
-                                metadata);
-    if (rc != BOWIE_OK) {
-        return rc;
+        memset(&scfg, 0, sizeof(scfg));
+        scfg.max_hashes         = dht->config.max_hashes;
+        scfg.max_peers_per_hash = dht->config.max_peers_per_hash;
+        scfg.peer_lifetime_s    = dht->config.peer_lifetime_s;
+        scfg.store_metadata     = dht->config.store_metadata;
+
+        rc = bowie_dht_storage_init(&dht->storage, &scfg,
+                                     hashes, hashes_cap,
+                                     peers, peers_cap,
+                                     metadata);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
     }
 
-    /*
-     * Initialize the token state. The rotation interval is
-     * the config's value in seconds, converted to
-     * milliseconds.
-     */
-    bowie_mtime_t rotate_ms =
-        (bowie_mtime_t)dht->config.token_rotate_s * 1000u;
-    rc = bowie_dht_token_state_init(&dht->token_state,
-                                    rotate_ms, now_ms);
-    if (rc != BOWIE_OK) {
-        return rc;
+    /* Initialize the token state. */
+    {
+        bowie_mtime_t rotate_ms =
+            (bowie_mtime_t)dht->config.token_rotate_s * 1000;
+
+        rc = bowie_dht_token_state_init(&dht->token_state,
+                                         rotate_ms, now_ms);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
     }
 
-    /*
-     * Initialize the security state. The rate-limit table
-     * is required only when the level is STRICT.
-     */
-    rc = bowie_dht_security_init(&dht->security,
-                                 dht->config.sec_level,
-                                 rate_limits, rate_limits_cap,
-                                 dht->config.max_requests_per_window,
-                                 0u);
-    if (rc != BOWIE_OK) {
-        return rc;
+    /* Initialize the security state. */
+    {
+        rc = bowie_dht_security_init(&dht->security,
+                                      dht->config.sec_level,
+                                      rate_limits, rate_limits_cap,
+                                      dht->config.max_requests_per_window,
+                                      0);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
     }
 
     dht->last_refresh_ms = now_ms;
-    dht->initialized = 1;
+    dht->initialized     = 1;
+    dht->socket_fd       = -1;
+    dht->running         = 0;
+    dht->stop_requested  = 0;
+
+    /* Set up the arenas (they are stored in the engine). */
+    dht->benc_arena.values      = dht->benc_values;
+    dht->benc_arena.values_cap  = 512;
+    dht->benc_arena.entries     = dht->benc_entries;
+    dht->benc_arena.entries_cap = 256;
+
+    dht->msg_arena.nodes     = dht->msg_nodes;
+    dht->msg_arena.nodes_cap = 64;
+    dht->msg_arena.peers     = dht->msg_peers;
+    dht->msg_arena.peers_cap = 64;
+
+    return BOWIE_OK;
+}
+
+bowie_error_t bowie_dht_start(bowie_dht_t *dht, uint16_t port)
+{
+    struct sockaddr_in addr;
+
+    if (dht == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    if (!dht->initialized) {
+        return BOWIE_ERR_INVAL;
+    }
+
+    if (dht->running) {
+        return BOWIE_ERR_STATE;
+    }
+
+    /* Create the UDP socket. */
+    dht->socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (dht->socket_fd < 0) {
+        return BOWIE_ERR_NETWORK;
+    }
+
+    /* Bind the socket. */
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port        = htons(port);
+
+    if (bind(dht->socket_fd, (struct sockaddr *)&addr,
+             sizeof(addr)) < 0) {
+        close(dht->socket_fd);
+        dht->socket_fd = -1;
+        return BOWIE_ERR_NETWORK;
+    }
+
+    dht->stop_requested = 0;
+
+    /* Start the thread. */
+    if (pthread_create(&dht->thread, NULL, dht_thread_main, dht) != 0) {
+        close(dht->socket_fd);
+        dht->socket_fd = -1;
+        return BOWIE_ERR_INTERNAL;
+    }
+
+    dht->running = 1;
+
+    return BOWIE_OK;
+}
+
+bowie_error_t bowie_dht_stop(bowie_dht_t *dht)
+{
+    if (dht == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    if (!dht->running) {
+        return BOWIE_ERR_NOT_STARTED;
+    }
+
+    dht->stop_requested = 1;
+
+    pthread_join(dht->thread, NULL);
+
+    if (dht->socket_fd >= 0) {
+        close(dht->socket_fd);
+        dht->socket_fd = -1;
+    }
+
+    dht->running = 0;
+
     return BOWIE_OK;
 }
 
@@ -202,7 +415,13 @@ void bowie_dht_shutdown(bowie_dht_t *dht)
     if (dht == NULL) {
         return;
     }
+
+    if (dht->running) {
+        (void)bowie_dht_stop(dht);
+    }
+
     memset(dht, 0, sizeof(*dht));
+    dht->socket_fd = -1;
 }
 
 void bowie_dht_clear(bowie_dht_t *dht)
@@ -210,69 +429,15 @@ void bowie_dht_clear(bowie_dht_t *dht)
     if (dht == NULL) {
         return;
     }
+
     bowie_dht_routing_clear(&dht->routing);
     bowie_dht_storage_clear(&dht->storage);
     bowie_dht_sec_rate_clear(&dht->security);
-    dht->last_refresh_ms = 0u;
 }
 
 /*
  * ============================================================================
- * PART 1 — QUERY HELPERS
- * ============================================================================
- */
-
-const bowie_dht_node_id_t *bowie_dht_local_id(
-    const bowie_dht_t *dht)
-{
-    if (dht == NULL) {
-        return NULL;
-    }
-    return &dht->local_id;
-}
-
-size_t bowie_dht_node_count(const bowie_dht_t *dht)
-{
-    if (dht == NULL) {
-        return 0u;
-    }
-    return bowie_dht_routing_node_count(&dht->routing);
-}
-
-size_t bowie_dht_hash_count(const bowie_dht_t *dht)
-{
-    if (dht == NULL) {
-        return 0u;
-    }
-    return bowie_dht_storage_hash_count(&dht->storage);
-}
-
-size_t bowie_dht_peer_count(const bowie_dht_t *dht)
-{
-    if (dht == NULL) {
-        return 0u;
-    }
-    return bowie_dht_storage_peer_count(&dht->storage);
-}
-
-/*
- * ============================================================================
- * PART 1 — TRANSACTION ID
- * ============================================================================
- *
- * A transaction id is two bytes. The engine generates a
- * random one for each query. The caller may override the
- * value by passing a non-NULL tid with a non-zero len.
- */
-
-static bowie_error_t random_tid(uint8_t out[2])
-{
-    return bowie_rand_secure_bytes(out, 2u);
-}
-
-/*
- * ============================================================================
- * PART 1 — QUERY BUILDER
+ * QUERY
  * ============================================================================
  */
 
@@ -288,452 +453,61 @@ bowie_error_t bowie_dht_make_query(
     if (dht == NULL || out == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
+
     if (!dht->initialized) {
         return BOWIE_ERR_INVAL;
     }
 
-    memset(out, 0, sizeof(*out));
-    out->type = BOWIE_DHT_MSG_QUERY;
-    out->sender_id = dht->local_id;
+    if (tid_len > BOWIE_DHT_MSG_TID_MAX) {
+        return BOWIE_ERR_TOO_LARGE;
+    }
 
-    /*
-     * The transaction id: the caller's if given, a random
-     * one otherwise.
-     */
-    if (tid != NULL && tid_len > 0u) {
-        if (tid_len > BOWIE_DHT_MSG_TID_MAX) {
-            return BOWIE_ERR_TOO_LARGE;
-        }
+    memset(out, 0, sizeof(*out));
+
+    out->type       = BOWIE_DHT_MSG_QUERY;
+    out->query_type = type;
+    out->sender_id  = dht->local_id;
+
+    if (tid != NULL && tid_len > 0) {
         memcpy(out->tid, tid, tid_len);
         out->tid_len = tid_len;
-    } else {
-        bowie_error_t rc = random_tid(out->tid);
-        if (rc != BOWIE_OK) {
-            return rc;
-        }
-        out->tid_len = 2u;
     }
 
     switch (type) {
     case BOWIE_DHT_QUERY_PING:
-        out->query_type = type;
-        return BOWIE_OK;
+        break;
 
     case BOWIE_DHT_QUERY_FIND_NODE:
         if (target == NULL) {
             return BOWIE_ERR_NULL_ARG;
         }
-        out->query_type = type;
         out->target = *target;
-        return BOWIE_OK;
+        break;
 
     case BOWIE_DHT_QUERY_GET_PEERS:
         if (info_hash == NULL) {
             return BOWIE_ERR_NULL_ARG;
         }
-        out->query_type = type;
         out->info_hash = *info_hash;
-        return BOWIE_OK;
+        break;
 
     case BOWIE_DHT_QUERY_ANNOUNCE_PEER:
         if (info_hash == NULL) {
             return BOWIE_ERR_NULL_ARG;
         }
-        out->query_type = type;
         out->info_hash = *info_hash;
-        /*
-         * The port and the token are filled by the caller
-         * before the message is sent. The caller sets
-         * out->port and out->token.
-         */
-        return BOWIE_OK;
+        break;
 
     default:
         return BOWIE_ERR_INVAL;
     }
-}
-
-/*
- * ============================================================================
- * END OF PART 1
- * ============================================================================
- */
-/*
- * ============================================================================
- * PART 2 — MESSAGE HANDLING
- * ============================================================================
- *
- * The message handler processes an incoming message and, for
- * a query, produces a response.
- *
- * The handler is the entry point for the network. The caller
- * parses the message with the message layer, then calls the
- * handler. The handler updates the routing table and the
- * storage, and fills a response message.
- *
- * The handler applies the security checks. A message that
- * fails a check is answered with an error, or dropped.
- *
- * The handler writes the response's nodes and peers into the
- * caller-supplied message arena. The arena's arrays are
- * owned by the caller and must be large enough for the
- * response.
- *
- * ----------------------------------------------------------------------------
- * Design notes
- * ----------------------------------------------------------------------------
- *
- * The handler does not send the response. The caller
- * serializes the response and sends it.
- *
- * For a response message, the handler updates the routing
- * table with the sender's node ID and address. It also
- * updates the sender's token if the response carried one.
- * The handler does not fill a response; out_has_response is
- * set to 0.
- *
- * For an error message, the handler does nothing. The caller
- * may use the error to update a search.
- *
- * The handler converts the closest nodes to the compact form
- * before writing them into the arena. The conversion is done
- * by the write_nodes_to_arena helper.
- */
-
-/*
- * ============================================================================
- * INTERNAL — ERROR RESPONSE
- * ============================================================================
- *
- * Build an error response to a query. The transaction id is
- * copied from the query. The error code and message are
- * filled in.
- */
-
-static void build_error_response(
-    const bowie_dht_message_t *query,
-    int                        code,
-    const char                *message,
-    bowie_dht_message_t       *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->type = BOWIE_DHT_MSG_ERROR;
-    out->tid_len = query->tid_len;
-    memcpy(out->tid, query->tid, query->tid_len);
-    out->error_code = code;
-    out->error_message.data = (const uint8_t *)message;
-    out->error_message.len  = (message != NULL)
-                              ? strlen(message) : 0u;
-}
-
-/*
- * ============================================================================
- * INTERNAL — WRITE COMPACT NODES INTO ARENA
- * ============================================================================
- *
- * Convert an array of full nodes into the arena's compact
- * node array. The number of nodes written is the smaller of
- * the input count and the arena's capacity. The count is
- * returned.
- */
-
-static size_t write_nodes_to_arena(
-    const bowie_dht_node_t     *nodes,
-    size_t                      count,
-    bowie_dht_message_arena_t  *arena)
-{
-    if (arena == NULL || arena->nodes == NULL ||
-        arena->nodes_cap == 0u) {
-        return 0u;
-    }
-
-    size_t n = count;
-    if (n > arena->nodes_cap) {
-        n = arena->nodes_cap;
-    }
-
-    for (size_t i = 0u; i < n; i++) {
-        arena->nodes[i].id = nodes[i].id;
-        arena->nodes[i].addr = nodes[i].addr;
-    }
-    arena->nodes_used = n;
-    return n;
-}
-
-/*
- * ============================================================================
- * INTERNAL — WRITE PEERS INTO ARENA
- * ============================================================================
- *
- * Copy an array of peer entries into the arena's peer array.
- * The number written is the smaller of the input count and
- * the arena's capacity. The count is returned.
- *
- * Only the address is copied; the arena stores compact
- * peers.
- */
-
-static size_t write_peers_to_arena(
-    const bowie_dht_peer_entry_t *peers,
-    size_t                        count,
-    bowie_dht_message_arena_t    *arena)
-{
-    if (arena == NULL || arena->peers == NULL ||
-        arena->peers_cap == 0u) {
-        return 0u;
-    }
-
-    size_t n = count;
-    if (n > arena->peers_cap) {
-        n = arena->peers_cap;
-    }
-
-    for (size_t i = 0u; i < n; i++) {
-        arena->peers[i].addr = peers[i].addr;
-    }
-    arena->peers_used = n;
-    return n;
-}
-
-/*
- * ============================================================================
- * INTERNAL — HANDLE PING
- * ============================================================================
- *
- * A ping query is answered with a response that carries the
- * local node ID and nothing else.
- */
-
-static bowie_error_t handle_ping(
-    const bowie_dht_t         *dht,
-    const bowie_dht_message_t *query,
-    bowie_dht_message_t       *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->type = BOWIE_DHT_MSG_RESPONSE;
-    out->tid_len = query->tid_len;
-    memcpy(out->tid, query->tid, query->tid_len);
-    out->sender_id = dht->local_id;
-    return BOWIE_OK;
-}
-
-/*
- * ============================================================================
- * INTERNAL — HANDLE FIND_NODE
- * ============================================================================
- *
- * A find_node query is answered with the closest nodes to
- * the target from the routing table.
- */
-
-static bowie_error_t handle_find_node(
-    bowie_dht_t                *dht,
-    const bowie_dht_message_t  *query,
-    bowie_mtime_t               now_ms,
-    bowie_dht_message_arena_t  *arena,
-    bowie_dht_message_t        *out)
-{
-    /*
-     * Select the closest nodes to the target. The buffer
-     * is bounded by the bucket size.
-     */
-    bowie_dht_node_t nodes[BOWIE_DHT_K];
-    size_t count = 0u;
-
-    bowie_error_t rc = bowie_dht_routing_select_closest(
-        &dht->routing, &query->target, now_ms,
-        nodes, BOWIE_DHT_K, &count);
-    if (rc != BOWIE_OK) {
-        return rc;
-    }
-
-    /*
-     * Write the nodes into the caller's arena.
-     */
-    size_t written = write_nodes_to_arena(nodes, count, arena);
-
-    memset(out, 0, sizeof(*out));
-    out->type = BOWIE_DHT_MSG_RESPONSE;
-    out->tid_len = query->tid_len;
-    memcpy(out->tid, query->tid, query->tid_len);
-    out->sender_id = dht->local_id;
-
-    /*
-     * The response's nodes array points into the arena.
-     * The caller keeps the arena alive.
-     */
-    if (arena != NULL && written > 0u) {
-        out->nodes       = arena->nodes;
-        out->nodes_count = written;
-    }
 
     return BOWIE_OK;
 }
 
 /*
  * ============================================================================
- * INTERNAL — HANDLE GET_PEERS
- * ============================================================================
- *
- * A get_peers query is answered with the peers for the info
- * hash, or with the closest nodes when there are no peers.
- * The response includes a token.
- *
- * When there are no peers, the target for the node lookup is
- * the info hash itself, reinterpreted as a node ID. The two
- * are the same size (160 bits), so the reinterpretation is a
- * copy.
- */
-
-static bowie_error_t handle_get_peers(
-    bowie_dht_t                *dht,
-    const bowie_dht_message_t  *query,
-    const bowie_addr_t         *from,
-    bowie_mtime_t               now_ms,
-    bowie_dht_message_arena_t  *arena,
-    bowie_dht_message_t        *out)
-{
-    /*
-     * Generate a token for the sender. The token is
-     * included in the response.
-     */
-    bowie_dht_token_t token;
-    bowie_error_t rc = bowie_dht_token_generate(
-        &dht->token_state, from, &token);
-    if (rc != BOWIE_OK) {
-        return rc;
-    }
-
-    /*
-     * Find the peers for the info hash. The buffer is
-     * bounded by the storage's per-hash limit.
-     */
-    bowie_dht_peer_entry_t peers[BOWIE_DHT_STORAGE_DEFAULT_MAX_PEERS_PER_HASH];
-    size_t peer_count = 0u;
-
-    rc = bowie_dht_storage_find_peers(
-        &dht->storage, &query->info_hash,
-        peers, NULL,
-        sizeof(peers) / sizeof(peers[0]),
-        &peer_count);
-    if (rc != BOWIE_OK && rc != BOWIE_ERR_NOT_FOUND) {
-        return rc;
-    }
-
-    /*
-     * If there are peers, the response carries them. If
-     * not, the response carries the closest nodes.
-     */
-    size_t nodes_written = 0u;
-
-    if (peer_count == 0u) {
-        bowie_dht_node_id_t target;
-        memcpy(target.bytes, query->info_hash.bytes,
-               BOWIE_DHT_INFO_HASH_LEN);
-
-        bowie_dht_node_t nodes[BOWIE_DHT_K];
-        size_t count = 0u;
-        rc = bowie_dht_routing_select_closest(
-            &dht->routing, &target, now_ms,
-            nodes, BOWIE_DHT_K, &count);
-        if (rc == BOWIE_OK) {
-            nodes_written = write_nodes_to_arena(nodes, count,
-                                                  arena);
-        }
-    } else {
-        (void)write_peers_to_arena(peers, peer_count, arena);
-    }
-
-    memset(out, 0, sizeof(*out));
-    out->type = BOWIE_DHT_MSG_RESPONSE;
-    out->tid_len = query->tid_len;
-    memcpy(out->tid, query->tid, query->tid_len);
-    out->sender_id = dht->local_id;
-    out->token = token;
-
-    if (arena != NULL) {
-        if (peer_count > 0u) {
-            out->peers       = arena->peers;
-            out->peers_count = arena->peers_used;
-        } else if (nodes_written > 0u) {
-            out->nodes       = arena->nodes;
-            out->nodes_count = nodes_written;
-        }
-    }
-
-    return BOWIE_OK;
-}
-
-/*
- * ============================================================================
- * INTERNAL — HANDLE ANNOUNCE_PEER
- * ============================================================================
- *
- * An announce_peer query stores the peer. The token is
- * validated first. A failed token is an error.
- */
-
-static bowie_error_t handle_announce_peer(
-    bowie_dht_t                *dht,
-    const bowie_dht_message_t  *query,
-    const bowie_addr_t         *from,
-    bowie_mtime_t               now_ms,
-    bowie_dht_message_t        *out,
-    int                        *out_has_response)
-{
-    /*
-     * Validate the token.
-     */
-    if (!bowie_dht_token_validate(&dht->token_state,
-                                  from, &query->token)) {
-        build_error_response(query, 203, "bad token", out);
-        *out_has_response = 1;
-        return BOWIE_OK;
-    }
-
-    /*
-     * Store the peer. The address is the sender's address;
-     * the port is the port from the query, unless the
-     * implied_port flag is set, in which case the port is
-     * the sender's source port.
-     *
-     * The capability mask is zero; the DHT does not carry
-     * capabilities. The caller that wants to record them
-     * uses the storage directly.
-     */
-    bowie_dht_peer_entry_t entry;
-    memset(&entry, 0, sizeof(entry));
-    entry.addr = *from;
-    if (!query->implied_port) {
-        entry.addr.port = query->port;
-    }
-    entry.capabilities = 0u;
-    entry.last_seen_ms = now_ms;
-
-    bowie_error_t rc = bowie_dht_storage_add_peer(
-        &dht->storage, &query->info_hash, &entry);
-    if (rc != BOWIE_OK) {
-        build_error_response(query, 202, "storage full", out);
-        *out_has_response = 1;
-        return BOWIE_OK;
-    }
-
-    /*
-     * The response carries the local node ID and nothing
-     * else.
-     */
-    memset(out, 0, sizeof(*out));
-    out->type = BOWIE_DHT_MSG_RESPONSE;
-    out->tid_len = query->tid_len;
-    memcpy(out->tid, query->tid, query->tid_len);
-    out->sender_id = dht->local_id;
-    *out_has_response = 1;
-    return BOWIE_OK;
-}
-
-/*
- * ============================================================================
- * PART 2 — HANDLE MESSAGE
+ * MESSAGE HANDLING
  * ============================================================================
  */
 
@@ -747,127 +521,192 @@ bowie_error_t bowie_dht_handle_message(
     int                        *out_has_response)
 {
     if (dht == NULL || msg == NULL || from == NULL ||
-        out_response == NULL || out_has_response == NULL) {
+        arena == NULL || out_response == NULL ||
+        out_has_response == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
+
     if (!dht->initialized) {
         return BOWIE_ERR_INVAL;
     }
 
     *out_has_response = 0;
 
-    /*
-     * Security: node ID check. A query that fails is
-     * answered with an error. A response that fails is
-     * dropped.
-     */
-    if (!bowie_dht_sec_node_id_ok(&dht->security,
-                                  &msg->sender_id, from)) {
-        if (msg->type == BOWIE_DHT_MSG_QUERY) {
-            build_error_response(msg, 203, "bad node id",
-                                 out_response);
-            *out_has_response = 1;
-        }
-        return BOWIE_OK;
-    }
-
-    /*
-     * Security: rate limit. Applied only to queries, and
-     * only when the level is STRICT.
-     */
-    if (dht->security.level == BOWIE_DHT_SEC_STRICT &&
-        msg->type == BOWIE_DHT_MSG_QUERY) {
-        bowie_error_t rc = bowie_dht_sec_check_rate(
-            &dht->security, from, now_ms);
-        if (rc == BOWIE_ERR_BUSY) {
-            build_error_response(msg, 202, "rate limited",
-                                 out_response);
+    switch (msg->type) {
+    case BOWIE_DHT_MSG_QUERY:
+        /* Check the node ID. */
+        if (!bowie_dht_sec_node_id_ok(&dht->security,
+                                       &msg->sender_id, from)) {
+            memset(out_response, 0, sizeof(*out_response));
+            out_response->type       = BOWIE_DHT_MSG_ERROR;
+            out_response->error_code = 203;
             *out_has_response = 1;
             return BOWIE_OK;
         }
-        /*
-         * A full rate-limit table is not an error for
-         * the message. The check is skipped.
-         */
-    }
 
-    /*
-     * Update the routing table with the sender. The node
-     * is added for both queries and responses.
-     */
-    if (msg->type == BOWIE_DHT_MSG_QUERY ||
-        msg->type == BOWIE_DHT_MSG_RESPONSE) {
-        bowie_dht_node_t node;
-        memset(&node, 0, sizeof(node));
-        node.id = msg->sender_id;
-        node.addr = *from;
-        node.last_seen_ms = now_ms;
-
-        (void)bowie_dht_routing_add(&dht->routing, &node, now_ms);
-    }
-
-    /*
-     * A response is not answered. The sender's token, if
-     * any, is stored for the node.
-     */
-    if (msg->type == BOWIE_DHT_MSG_RESPONSE) {
-        if (!bowie_dht_token_is_zero(&msg->token)) {
-            (void)bowie_dht_routing_set_token(
-                &dht->routing, &msg->sender_id, &msg->token);
+        /* Rate limit. */
+        if (bowie_dht_sec_check_rate(&dht->security, from,
+                                      now_ms) != BOWIE_OK) {
+            memset(out_response, 0, sizeof(*out_response));
+            out_response->type       = BOWIE_DHT_MSG_ERROR;
+            out_response->error_code = 202;
+            *out_has_response = 1;
+            return BOWIE_OK;
         }
-        return BOWIE_OK;
-    }
 
-    /*
-     * An error is ignored.
-     */
-    if (msg->type == BOWIE_DHT_MSG_ERROR) {
-        return BOWIE_OK;
-    }
+        /* Update the routing table. */
+        {
+            bowie_dht_node_t node;
+            memset(&node, 0, sizeof(node));
+            node.id           = msg->sender_id;
+            node.addr         = *from;
+            node.last_seen_ms = now_ms;
+            bowie_dht_routing_add(&dht->routing, &node, now_ms);
+        }
 
-    /*
-     * The message is a query. Dispatch by query type.
-     */
-    if (msg->type != BOWIE_DHT_MSG_QUERY) {
-        return BOWIE_OK;
-    }
+        /* Handle the query type. */
+        switch (msg->query_type) {
+        case BOWIE_DHT_QUERY_PING:
+            memset(out_response, 0, sizeof(*out_response));
+            out_response->type      = BOWIE_DHT_MSG_RESPONSE;
+            out_response->sender_id = dht->local_id;
+            memcpy(out_response->tid, msg->tid, msg->tid_len);
+            out_response->tid_len = msg->tid_len;
+            *out_has_response = 1;
+            break;
 
-    switch (msg->query_type) {
-    case BOWIE_DHT_QUERY_PING:
-        (void)handle_ping(dht, msg, out_response);
-        *out_has_response = 1;
-        return BOWIE_OK;
+        case BOWIE_DHT_QUERY_FIND_NODE:
+            memset(out_response, 0, sizeof(*out_response));
+            out_response->type      = BOWIE_DHT_MSG_RESPONSE;
+            out_response->sender_id = dht->local_id;
+            memcpy(out_response->tid, msg->tid, msg->tid_len);
+            out_response->tid_len = msg->tid_len;
+            out_response->nodes       = arena->nodes;
+            out_response->nodes_count = 0;
 
-    case BOWIE_DHT_QUERY_FIND_NODE:
-        (void)handle_find_node(dht, msg, now_ms, arena,
-                               out_response);
-        *out_has_response = 1;
-        return BOWIE_OK;
+            {
+                bowie_dht_node_t closest[8];
+                size_t count = 0;
+                size_t i;
 
-    case BOWIE_DHT_QUERY_GET_PEERS:
-        (void)handle_get_peers(dht, msg, from, now_ms, arena,
-                               out_response);
-        *out_has_response = 1;
-        return BOWIE_OK;
+                bowie_dht_routing_select_closest(
+                    &dht->routing, &msg->target, now_ms,
+                    closest, 8, &count);
 
-    case BOWIE_DHT_QUERY_ANNOUNCE_PEER:
-        return handle_announce_peer(dht, msg, from, now_ms,
-                                    out_response,
-                                    out_has_response);
+                for (i = 0; i < count && i < 8; i++) {
+                    arena->nodes[i].id   = closest[i].id;
+                    arena->nodes[i].addr = closest[i].addr;
+                }
+                out_response->nodes_count = count;
+            }
+
+            *out_has_response = 1;
+            break;
+
+        case BOWIE_DHT_QUERY_GET_PEERS:
+            memset(out_response, 0, sizeof(*out_response));
+            out_response->type      = BOWIE_DHT_MSG_RESPONSE;
+            out_response->sender_id = dht->local_id;
+            memcpy(out_response->tid, msg->tid, msg->tid_len);
+            out_response->tid_len = msg->tid_len;
+
+            /* Generate a token. */
+            bowie_dht_token_generate(&dht->token_state, from,
+                                      &out_response->token);
+
+            /* Find peers. */
+            {
+                bowie_dht_peer_entry_t found[16];
+                size_t count = 0;
+                size_t i;
+
+                bowie_dht_storage_find_peers(
+                    &dht->storage, &msg->info_hash,
+                    found, NULL, 16, &count);
+
+                out_response->peers       = arena->peers;
+                out_response->peers_count = 0;
+
+                for (i = 0; i < count && i < 16; i++) {
+                    arena->peers[i].addr = found[i].addr;
+                }
+                out_response->peers_count = count;
+            }
+
+            *out_has_response = 1;
+            break;
+
+        case BOWIE_DHT_QUERY_ANNOUNCE_PEER:
+            /* Validate the token. */
+            if (!bowie_dht_token_validate(&dht->token_state, from,
+                                           &msg->token)) {
+                memset(out_response, 0, sizeof(*out_response));
+                out_response->type       = BOWIE_DHT_MSG_ERROR;
+                out_response->error_code = 203;
+                *out_has_response = 1;
+                break;
+            }
+
+            /* Store the peer. */
+            {
+                bowie_dht_peer_entry_t peer;
+                memset(&peer, 0, sizeof(peer));
+                peer.addr          = *from;
+                peer.capabilities  = 0;
+                peer.last_seen_ms  = now_ms;
+                peer.expires_at_ms = now_ms +
+                    (bowie_mtime_t)dht->config.peer_lifetime_s * 1000;
+
+                bowie_dht_storage_add_peer(&dht->storage,
+                                            &msg->info_hash, &peer);
+            }
+
+            memset(out_response, 0, sizeof(*out_response));
+            out_response->type      = BOWIE_DHT_MSG_RESPONSE;
+            out_response->sender_id = dht->local_id;
+            memcpy(out_response->tid, msg->tid, msg->tid_len);
+            out_response->tid_len = msg->tid_len;
+            *out_has_response = 1;
+            break;
+
+        default:
+            break;
+        }
+        break;
+
+    case BOWIE_DHT_MSG_RESPONSE:
+        /* Update the routing table. */
+        {
+            bowie_dht_node_t node;
+            memset(&node, 0, sizeof(node));
+            node.id           = msg->sender_id;
+            node.addr         = *from;
+            node.last_seen_ms = now_ms;
+            bowie_dht_routing_add(&dht->routing, &node, now_ms);
+
+            /* Store the token if present. */
+            if (!bowie_dht_token_is_zero(&msg->token)) {
+                bowie_dht_routing_set_token(&dht->routing,
+                                             &msg->sender_id,
+                                             &msg->token);
+            }
+        }
+        break;
+
+    case BOWIE_DHT_MSG_ERROR:
+        /* Ignore. */
+        break;
 
     default:
-        /*
-         * An unknown query type is ignored. The caller
-         * may send an error response; the handler does
-         * not.
-         */
-        return BOWIE_OK;
+        break;
     }
+
+    return BOWIE_OK;
 }
 
 /*
  * ============================================================================
- * PART 3 — MAINTENANCE
+ * MAINTENANCE
  * ============================================================================
  */
 
@@ -880,6 +719,7 @@ bowie_error_t bowie_dht_tick(
     if (dht == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
+
     if (!dht->initialized) {
         return BOWIE_ERR_INVAL;
     }
@@ -888,100 +728,90 @@ bowie_error_t bowie_dht_tick(
         *out_has_refresh = 0;
     }
 
-    /*
-     * Rotate the token secret when the interval has
-     * elapsed.
-     */
-    if (bowie_dht_token_should_rotate(&dht->token_state,
-                                      now_ms)) {
-        (void)bowie_dht_token_rotate(&dht->token_state, now_ms);
+    /* Rotate the token secret. */
+    if (bowie_dht_token_should_rotate(&dht->token_state, now_ms)) {
+        bowie_dht_token_rotate(&dht->token_state, now_ms);
     }
 
-    /*
-     * Expire the stale peer entries.
-     */
-    (void)bowie_dht_storage_expire(&dht->storage, now_ms);
+    /* Expire the stale peers. */
+    bowie_dht_storage_expire(&dht->storage, now_ms);
 
-    /*
-     * Refresh a bucket when the refresh interval has
-     * elapsed. The refresh is a find_node query for a
-     * random ID in the range of the stalest bucket.
-     */
-    bowie_mtime_t interval_ms =
-        (bowie_mtime_t)dht->config.refresh_interval_s * 1000u;
+    /* Build a refresh query if it is time. */
+    {
+        bowie_mtime_t interval_ms =
+            (bowie_mtime_t)dht->config.refresh_interval_s * 1000;
 
-    if (interval_ms == 0u) {
-        return BOWIE_OK;
-    }
+        if (now_ms - dht->last_refresh_ms >= interval_ms) {
+            dht->last_refresh_ms = now_ms;
 
-    if (now_ms < dht->last_refresh_ms) {
-        /*
-         * The clock moved backwards. Do not refresh.
-         */
-        return BOWIE_OK;
-    }
+            if (out_refresh != NULL && out_has_refresh != NULL) {
+                int idx = bowie_dht_routing_stalest_bucket(&dht->routing);
 
-    if ((now_ms - dht->last_refresh_ms) < interval_ms) {
-        return BOWIE_OK;
-    }
+                if (idx >= 0) {
+                    bowie_dht_node_id_t target;
+                    size_t i;
 
-    if (out_refresh == NULL || out_has_refresh == NULL) {
-        /*
-         * The caller does not want the refresh query.
-         * Update the timestamp anyway, so that the next
-         * tick does not repeat the same interval.
-         */
-        dht->last_refresh_ms = now_ms;
-        return BOWIE_OK;
-    }
+                    for (i = 0; i < BOWIE_DHT_NODE_ID_LEN; i++) {
+                        target.bytes[i] = (uint8_t)(rand() & 0xFF);
+                    }
 
-    /*
-     * Find the stalest bucket. The bucket index is used to
-     * pick a random ID in the bucket's range.
-     */
-    int bucket_idx = bowie_dht_routing_stalest_bucket(
-        &dht->routing);
-    if (bucket_idx < 0) {
-        dht->last_refresh_ms = now_ms;
-        return BOWIE_OK;
-    }
-
-    /*
-     * A random target ID. The ID is the local ID with the
-     * bit at the bucket index flipped, and the lower bits
-     * randomized.
-     */
-    bowie_dht_node_id_t target = dht->local_id;
-
-    size_t byte_idx = (size_t)bucket_idx / 8u;
-    int    bit_idx  = 7 - (bucket_idx % 8);
-    if (byte_idx < BOWIE_DHT_NODE_ID_LEN) {
-        target.bytes[byte_idx] ^= (uint8_t)(1u << bit_idx);
-
-        /*
-         * Randomize the bytes below the flipped byte.
-         */
-        if (byte_idx + 1u < BOWIE_DHT_NODE_ID_LEN) {
-            (void)bowie_rand_secure_bytes(
-                target.bytes + byte_idx + 1u,
-                BOWIE_DHT_NODE_ID_LEN - byte_idx - 1u);
+                    bowie_dht_make_query(dht, BOWIE_DHT_QUERY_FIND_NODE,
+                                          &target, NULL, NULL, 0,
+                                          out_refresh);
+                    *out_has_refresh = 1;
+                }
+            }
         }
     }
 
-    bowie_error_t rc = bowie_dht_make_query(
-        dht, BOWIE_DHT_QUERY_FIND_NODE, &target, NULL,
-        NULL, 0u, out_refresh);
-    if (rc != BOWIE_OK) {
-        return rc;
-    }
-
-    dht->last_refresh_ms = now_ms;
-    *out_has_refresh = 1;
     return BOWIE_OK;
 }
 
 /*
  * ============================================================================
- * END OF FILE
+ * QUERY
+ * ============================================================================
+ */
+
+const bowie_dht_node_id_t *bowie_dht_local_id(
+    const bowie_dht_t *dht)
+{
+    if (dht == NULL) {
+        return NULL;
+    }
+
+    return &dht->local_id;
+}
+
+size_t bowie_dht_node_count(const bowie_dht_t *dht)
+{
+    if (dht == NULL) {
+        return 0;
+    }
+
+    return bowie_dht_routing_node_count(&dht->routing);
+}
+
+size_t bowie_dht_hash_count(const bowie_dht_t *dht)
+{
+    if (dht == NULL) {
+        return 0;
+    }
+
+    return bowie_dht_storage_hash_count(&dht->storage);
+}
+
+size_t bowie_dht_peer_count(const bowie_dht_t *dht)
+{
+    if (dht == NULL) {
+        return 0;
+    }
+
+    return bowie_dht_storage_peer_count(&dht->storage);
+}
+
+/*
+ * ============================================================================
+ * END OF DHT ENGINE IMPLEMENTATION
  * ============================================================================
  */
