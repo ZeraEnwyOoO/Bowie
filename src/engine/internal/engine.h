@@ -116,7 +116,6 @@
 #include "bowie/types.h"
 #include "bowie/err.h"
 #include "engine/engine.h"
-#include "engine/internal/event.h"
 #include "dht/dht.h"
 #include "nat/nat.h"
 #include "tunnel/tun_linux.h"
@@ -182,6 +181,8 @@ extern "C" {
  * ============================================================================
  */
 
+/* Forward Declaration */
+struct bowie_engine_event_queue;
 struct bowie_engine {
     /*
      * ----------------------------------------------------------------
