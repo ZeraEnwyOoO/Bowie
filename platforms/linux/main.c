@@ -162,6 +162,31 @@ int main(int argc, char **argv) {
         }
         printf("\n[Bowie] Shutting down...\n");
     } 
+        else if (strcmp(argv[1], "bootstrap") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: %s bootstrap <ip> <port>\n", argv[0]);
+            goto cleanup;
+        }
+
+        const char *ip = argv[2];
+        uint16_t port = (uint16_t)atoi(argv[3]);
+
+        printf("[Bowie] Bootstrapping DHT to %s:%u...\n", ip, port);
+
+        rc = bowie_engine_add_bootstrap(engine, ip, port);
+        if (rc != BOWIE_OK) {
+            fprintf(stderr, "Bootstrap failed: %s\n", bowie_err_strerror(rc));
+            goto cleanup;
+        }
+
+        printf("[Bowie] Bootstrap successful! DHT is now connected.\n");
+        printf("[Bowie] Waiting... Press Ctrl+C to stop.\n");
+
+        while (g_running) {
+            sleep(1);
+        }
+        printf("\n[Bowie] Shutting down...\n");
+    }    
     else if (strcmp(argv[1], "status") == 0) {
         bowie_public_id_t pub_id;
         bowie_peer_id_t peer_id;
