@@ -263,6 +263,112 @@ static void make_nat_config(const bowie_engine_config_t *cfg,
 
 /*
  * ============================================================================
+ * INTERNAL — X25519 SESSION KEY EXCHANGE
+ * ============================================================================
+ *
+ * The engine's session key is derived from an X25519 shared
+ * secret. Each side generates a keypair, sends its public key
+ * to the peer, receives the peer's public key, and computes
+ * the shared secret. The shared secret is then passed through
+ * HKDF to produce the AES-256-GCM session key.
+ *
+ * The exchange is symmetrical: both sides do the same thing.
+ * The only difference is the order of the two sends and
+ * receives. The initiator sends first; the responder sends
+ * second.
+ *
+ * A message on the stream is a 32-byte X25519 public key.
+ * The stream frames the message; the exchange does not add
+ * a type tag. The order of the exchange is what tells the
+ * two messages apart.
+ */
+
+static const uint8_t kSessionInfo[] = "bowie session key v1";
+
+/*
+ * Send the local X25519 public key and receive the peer's.
+ *
+ * The caller supplies the stream, the local keypair, and a
+ * buffer for the peer's public key. On success, the peer's
+ * public key is written through out_remote_pub.
+ *
+ * The function does not compute the shared secret; the caller
+ * does that after it has both keys. Keeping the exchange and
+ * the derivation separate makes the two steps testable on
+ * their own.
+ */
+static bowie_error_t exchange_x25519(bowie_proto_stream_t *stream,
+                                     const bowie_keypair_public_t *local_pub,
+                                     bowie_keypair_public_t *out_remote_pub,
+                                     int initiator)
+{
+    uint8_t        buf[BOWIE_KEYPAIR_PUBLIC_LEN];
+    size_t         n = 0u;
+    bowie_error_t  rc;
+    int            retries;
+
+    if (initiator) {
+        /* 1. Send our public key. */
+        rc = bowie_proto_stream_write_msg(stream,
+                                          local_pub->bytes,
+                                          BOWIE_KEYPAIR_PUBLIC_LEN);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
+
+        /* 2. Receive the peer's public key. */
+        for (retries = 0; retries < 100; retries++) {
+            rc = bowie_proto_stream_read_msg(stream, buf, sizeof(buf), &n);
+            if (rc == BOWIE_OK) {
+                break;
+            }
+            if (rc != BOWIE_ERR_AGAIN) {
+                return rc;
+            }
+            /* Wait 10ms and try again */
+            struct timespec ts = { 0, 10000000L };
+            nanosleep(&ts, NULL);
+        }
+        if (rc != BOWIE_OK) {
+            return BOWIE_ERR_TIMEOUT;
+        }
+    } else {
+        /* 1. Receive the peer's public key. */
+        for (retries = 0; retries < 100; retries++) {
+            rc = bowie_proto_stream_read_msg(stream, buf, sizeof(buf), &n);
+            if (rc == BOWIE_OK) {
+                break;
+            }
+            if (rc != BOWIE_ERR_AGAIN) {
+                return rc;
+            }
+            struct timespec ts = { 0, 10000000L };
+            nanosleep(&ts, NULL);
+        }
+        if (rc != BOWIE_OK) {
+            return BOWIE_ERR_TIMEOUT;
+        }
+
+        /* 2. Send our public key. */
+        rc = bowie_proto_stream_write_msg(stream,
+                                          local_pub->bytes,
+                                          BOWIE_KEYPAIR_PUBLIC_LEN);
+        if (rc != BOWIE_OK) {
+            return rc;
+        }
+    }
+
+    if (n != BOWIE_KEYPAIR_PUBLIC_LEN) {
+        return BOWIE_ERR_FORMAT;
+    }
+
+    memcpy(out_remote_pub->bytes, buf, BOWIE_KEYPAIR_PUBLIC_LEN);
+    return BOWIE_OK;
+}
+
+
+/*
+ * ============================================================================
  * LIFECYCLE — DEFAULTS
  * ============================================================================
  */
