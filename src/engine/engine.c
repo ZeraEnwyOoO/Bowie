@@ -48,6 +48,8 @@
 #include "security/quota.h"
 #include "security/kdf.h"         /* Newly added */
 #include "proto/stream.h"         /* Newly added */
+#include "crypto/hash.h"          /*  for  bowie_hash_sha1 */
+#include "security/sign.h"        /* for bowie_security_sign_generate */
 #include "net/peer.h"
 #include "engine/engine.h"
 #include "engine/internal/engine.h"
