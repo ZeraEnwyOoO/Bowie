@@ -330,6 +330,41 @@ bowie_error_t bowie_dht_make_query(
     size_t                       tid_len,
     bowie_dht_message_t         *out);
 
+
+
+/*
+ * ============================================================================
+ * SEND QUERY
+ * ============================================================================
+ *
+ * Send a built DHT query to a peer over the DHT socket.
+ *
+ * The DHT background thread owns the socket. This function
+ * sends on that socket without going through the thread; a
+ * UDP send is atomic, so a send from the caller's thread and
+ * a send from the DHT thread do not interleave.
+ *
+ * The message is serialized into a local buffer, then sent
+ * to the given address. The address must be IPv4.
+ *
+ * The caller builds the message with bowie_dht_make_query()
+ * and fills the transaction id. The caller is also the one
+ * that tracks the query for the search state; this function
+ * does not update any search state.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if dht, to, or msg is NULL.
+ * Returns BOWIE_ERR_STATE if the DHT is not running.
+ * Returns BOWIE_ERR_INVAL if the address is not IPv4.
+ * Returns BOWIE_ERR_TOO_LARGE if the serialized message does
+ *   not fit the packet buffer.
+ * Returns BOWIE_ERR_NETWORK if the send fails.
+ */
+bowie_error_t bowie_dht_send_query(bowie_dht_t               *dht,
+                                    const bowie_addr_t        *to,
+                                    const bowie_dht_message_t *msg);
+
+
 /*
  * ============================================================================
  * MESSAGE HANDLING
