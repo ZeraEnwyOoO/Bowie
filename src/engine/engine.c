@@ -390,7 +390,30 @@ fail_dht_alloc:
     pthread_mutex_unlock(&e->lock);
     return rc;
 }
+bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
+                                         const char *ip,
+                                         uint16_t port)
+{
+    if (e == NULL || ip == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (e->state != BOWIE_ENGINE_STARTED) {
+        return BOWIE_ERR_STATE;
+    }
 
+    // Add the bootstrap node to the DHT's routing table
+    // (We'll just use the DHT's config to add it)
+    // Note: This is a simplified version. The DHT config
+    // is already copied into the DHT struct.
+    bowie_dht_bootstrap_t *b = &e->dht->config.bootstrap[e->dht->config.bootstrap_count];
+    strncpy(b->host, ip, BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1);
+    b->host[BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1] = '\0';
+    b->port = port;
+    e->dht->config.bootstrap_count++;
+
+    printf("[Engine] Added bootstrap node %s:%u\n", ip, port);
+    return BOWIE_OK;
+}
 /*
  * ============================================================================
  * LIFECYCLE — STOP
