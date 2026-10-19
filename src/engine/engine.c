@@ -65,7 +65,7 @@
 
 static bowie_log_t g_engine_log;
 static int         g_engine_log_ready = 0;
-static bowie_log_hook_fn g_engine_log_hook = NULL; // <--- Hook ថ្មី
+static bowie_log_hook_fn g_engine_log_hook = NULL;
 
 static void engine_log_init(bowie_log_level_t level)
 {
@@ -77,7 +77,6 @@ static void engine_log_init(bowie_log_level_t level)
     }
 }
 
-// កែ ENGINE_LOG ដើម្បីឱ្យវាហៅ Hook បើមាន
 #define ENGINE_LOG(level, ...) \
     do { \
         if (g_engine_log_hook) { \
@@ -310,7 +309,7 @@ bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e, const bowie_hooks_t *hoo
     }
 
     e->hooks = *hooks;
-    g_engine_log_hook = hooks->log; // <--- កំណត់ Hook នៅទីនេះ
+    g_engine_log_hook = hooks->log; // <--- ភ្ជាប់ Hook នៅទីនេះ
 
     pthread_mutex_unlock(&e->lock);
     return BOWIE_OK;
@@ -391,7 +390,6 @@ bowie_error_t bowie_engine_start(bowie_engine_t *e, bowie_tun_t *tun)
     e->tun   = tun;
     e->state = BOWIE_ENGINE_STARTED;
 
-    printf("[DEBUG] Engine started. DHT port: %u, Signal port: %u\n", e->dht_port, e->signal_port);
     ENGINE_LOG(BOWIE_LOG_DEBUG, "DHT listening on port: %u", e->dht_port);
     ENGINE_LOG(BOWIE_LOG_DEBUG, "Signal listening on port: %u", e->signal_port);
     ENGINE_LOG(BOWIE_LOG_INFO, "engine started (dht port %u, signal port %u)", e->dht_port, e->signal_port);
@@ -462,10 +460,8 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e, const char *ip, uint
     pthread_mutex_unlock(&e->lock);
 
     if (rc == BOWIE_OK) {
-        printf("[DEBUG] PING sent to %s:%u\n", ip, port);
         ENGINE_LOG(BOWIE_LOG_DEBUG, "Sent PING to bootstrap node %s:%u", ip, port);
     } else {
-        printf("[DEBUG] Failed to send PING to %s:%u: %s\n", ip, port, bowie_err_strerror(rc));
         ENGINE_LOG(BOWIE_LOG_ERROR, "Failed to send PING to %s:%u: %s", ip, port, bowie_err_strerror(rc));
     }
     return rc;
