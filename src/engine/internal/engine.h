@@ -24,8 +24,8 @@
  * The private layout of struct bowie_engine.
  *
  * This header is internal to the Bowie library. It is not part
- * of the public API and is not installed. Only src/engine/*.c
- * includes it.
+ * of the public API and is not installed. Only source files in the
+ * src/engine directory include it.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
@@ -121,6 +121,7 @@
 #include "tunnel/tun_linux.h"
 #include "gateway/gateway.h"
 #include "security/sign.h"
+#include "security/grant.h"
 #include "security/session.h"
 #include "security/revoke.h"
 #include "security/quota.h"
