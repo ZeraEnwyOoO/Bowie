@@ -371,8 +371,11 @@ bowie_error_t bowie_engine_start(bowie_engine_t *e, bowie_tun_t *tun)
     e->tun   = tun;
     e->state = BOWIE_ENGINE_STARTED;
 
-    pthread_mutex_unlock(&e->lock);
+    ENGINE_LOG(BOWIE_LOG_DEBUG, "DHT listening on port: %u", e->dht_port);
+    ENGINE_LOG(BOWIE_LOG_DEBUG, "Signal listening on port: %u", e->signal_port);
     ENGINE_LOG(BOWIE_LOG_INFO, "engine started (dht port %u, signal port %u)", e->dht_port, e->signal_port);
+
+    pthread_mutex_unlock(&e->lock);
     return BOWIE_OK;
 
 fail_nat_started:
@@ -447,9 +450,10 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
     pthread_mutex_unlock(&e->lock);
 
     if (rc == BOWIE_OK) {
-        ENGINE_LOG(BOWIE_LOG_INFO, "Sent PING to bootstrap node %s:%u", ip, port);
+        ENGINE_LOG(BOWIE_LOG_DEBUG, "Sent PING to bootstrap node %s:%u", ip, port);
+    } else {
+        ENGINE_LOG(BOWIE_LOG_ERROR, "Failed to send PING to %s:%u: %s", ip, port, bowie_err_strerror(rc));
     }
-    
     return rc;
 }
 
