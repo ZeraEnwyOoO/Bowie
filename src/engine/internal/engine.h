@@ -182,7 +182,8 @@ extern "C" {
  */
 
 /* Forward Declaration */
-struct bowie_engine_event_queue *events;
+ /* Forward Declaration */
+struct bowie_engine_event_queue;
 struct bowie_engine {
     /*
      * ----------------------------------------------------------------
@@ -310,7 +311,7 @@ struct bowie_engine {
     bowie_revoke_list_t revoke_list;
     bowie_quota_t       quota;
 
-    bowie_engine_event_queue_t events; 
+         struct bowie_engine_event_queue *events; 
     /*
      * ----------------------------------------------------------------
      * Current connection
