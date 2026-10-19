@@ -124,7 +124,37 @@ bowie_error_t bowie_session_new(const uint8_t *shared_secret,
                                 size_t shared_secret_len,
                                 const bowie_session_id_t *session_id,
                                 bowie_session_t **out);
-
+/*
+ * Create a session from a pre-derived symmetric key.
+ *
+ * This is the "advanced" form of bowie_session_new(). The
+ * caller has already derived the session key with a KDF and
+ * passes the key bytes directly. The session layer does not
+ * run a KDF on the key; it copies it and uses it as the
+ * AES-256-GCM key.
+ *
+ * The key must be exactly BOWIE_SESSION_KEY_LEN bytes. A
+ * key of any other length is rejected. The caller is
+ * responsible for the KDF's domain separation; the session
+ * layer does not add an info string of its own.
+ *
+ * The session ID is a caller-supplied nonce. It is not used
+ * for cryptography; it is used for logging and for
+ * correlating messages. An all-zero ID is rejected.
+ *
+ * On success, *out points to the new session handle.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if out, key, or session_id is
+ *   NULL.
+ * Returns BOWIE_ERR_INVAL if the session ID is all-zero or
+ *   if the key length is not BOWIE_SESSION_KEY_LEN.
+ * Returns BOWIE_ERR_NOMEM if allocation fails.
+ */
+bowie_error_t bowie_session_new_from_key(
+    const uint8_t *key, size_t key_len,
+    const bowie_session_id_t *session_id,
+    bowie_session_t **out);
 /*
  * Free a session.
  *
