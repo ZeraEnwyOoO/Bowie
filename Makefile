@@ -131,6 +131,9 @@ LDLIBS  += $(shell pkg-config --libs libcrypto)
 LDLIBS  += -lcheck -lm -lpthread -lrt
 LDLIBS  += $(NAT_LIBS)
 
+# zlog library
+LDLIBS  += -lzlog
+
 # ----------------------------------------------------------------------------
 # Directories
 # ----------------------------------------------------------------------------
