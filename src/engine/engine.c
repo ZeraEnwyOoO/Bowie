@@ -33,7 +33,7 @@
 #include "core/internal/log.h"
 #include "core/internal/rand.h"
 #include "core/internal/time.h"
-#include "crypto/hash.h"          /* Fix: Added for bowie_hash_sha1_t */
+#include "crypto/hash.h"
 #include "dht/dht.h"
 #include "dht/search.h"
 #include "nat/nat.h"
@@ -47,8 +47,8 @@
 #include "security/session.h"
 #include "security/sign.h"
 #include "security/quota.h"
-#include "security/kdf.h"         
-#include "proto/stream.h"         
+#include "security/kdf.h"
+#include "proto/stream.h"
 #include "net/peer.h"
 #include "engine/engine.h"
 #include "engine/internal/engine.h"
@@ -285,7 +285,7 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     e->state = BOWIE_ENGINE_STOPPED;
     bowie_revoke_list_clear(&e->revoke_list);
     bowie_quota_init(&e->quota);
-    bowie_engine_event_queue_clear(&e->events); /* Fix: Removed '&' from e->events */
+    bowie_engine_event_queue_clear(&e->events);
 
     e->signal_fd   = -1;
     e->signal_port = 0;
@@ -867,6 +867,46 @@ size_t bowie_engine_dht_node_count(const bowie_engine_t *e)
 {
     if (e == NULL || e->dht == NULL) return 0;
     return bowie_dht_node_count(e->dht);
+}
+
+/*
+ * ============================================================================
+ * EVENTS (Implementation)
+ * ============================================================================
+ */
+
+void bowie_engine_drain_events(bowie_engine_t *e)
+{
+    if (e == NULL) return;
+    pthread_mutex_lock(&e->lock);
+    bowie_engine_event_drain(&e->events, NULL, NULL);
+    pthread_mutex_unlock(&e->lock);
+}
+
+int bowie_engine_poll_event(bowie_engine_t *e, bowie_event_record_t *out)
+{
+    if (e == NULL || out == NULL) return 0;
+    pthread_mutex_lock(&e->lock);
+    if (e->events.count == 0) {
+        pthread_mutex_unlock(&e->lock);
+        return 0;
+    }
+    *out = e->events.records[e->events.tail];
+    e->events.tail = (e->events.tail + 1) % BOWIE_ENGINE_EVENT_QUEUE_CAP;
+    e->events.count--;
+    pthread_mutex_unlock(&e->lock);
+    return 1;
+}
+
+/*
+ * ============================================================================
+ * BOOTSTRAP (Stub for now, to satisfy main.c)
+ * ============================================================================
+ */
+bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e, const char *host, uint16_t port)
+{
+    (void)e; (void)host; (void)port;
+    return BOWIE_OK; /* TODO: Implement DHT bootstrap */
 }
 
 /*
