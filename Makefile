@@ -14,6 +14,7 @@
 # ----------------------------------------------------------------------------
 #
 #   all        build the static library (default)
+#   app        build the bowie CLI binary
 #   test       build and run the unit tests
 #   clean      remove the build directory
 #   help       print this help
@@ -137,14 +138,13 @@ LDLIBS  += $(NAT_LIBS)
 BUILD_DIR   := build
 OBJ_DIR     := $(BUILD_DIR)/obj
 TEST_DIR    := $(BUILD_DIR)/tests
+APP_DIR     := $(BUILD_DIR)/bin
 LIB         := $(BUILD_DIR)/libbowie.a
+APP         := $(APP_DIR)/bowie
 
 # ----------------------------------------------------------------------------
 # Sources
 # ----------------------------------------------------------------------------
-#
-# ⚠️ UPDATED: Added new engine, stream, and kdf files below
-#
 
 LIB_SRCS := \
     src/api/version.c \
@@ -264,7 +264,7 @@ UNIT_TEST_BINS := $(UNIT_TEST_SRCS:tests/%.c=$(TEST_DIR)/%)
 # Phony targets
 # ----------------------------------------------------------------------------
 
-.PHONY: all test clean help
+.PHONY: all app test clean help
 
 # ----------------------------------------------------------------------------
 # Default target
@@ -286,6 +286,17 @@ $(OBJ_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 	@echo "  CC      $<"
+
+# ----------------------------------------------------------------------------
+# App Binary
+# ----------------------------------------------------------------------------
+
+app: $(APP)
+
+$(APP): platforms/linux/main.c $(LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $< $(LIB) $(LDLIBS) -o $@
+	@echo "  LINK    $@"
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -336,6 +347,7 @@ help:
 	@echo "Bowie — Makefile targets:"
 	@echo
 	@echo "  all      build the static library (default)"
+	@echo "  app      build the bowie CLI binary"
 	@echo "  test     build and run the unit tests"
 	@echo "  clean    remove the build directory"
 	@echo "  help     print this help"
@@ -351,6 +363,7 @@ help:
 	@echo "Examples:"
 	@echo
 	@echo "  make"
+	@echo "  make app"
 	@echo "  make test"
 	@echo "  make PLATFORM=android"
 	@echo "  make NAT_BACKEND=libjuice"
