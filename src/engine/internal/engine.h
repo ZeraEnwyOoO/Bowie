@@ -24,8 +24,8 @@
  * The private layout of struct bowie_engine.
  *
  * This header is internal to the Bowie library. It is not part
- * of the public API and is not installed. Only src/engine.c
- * includes it.
+ * of the public API and is not installed. Only the C files in
+ * the src/engine directory include it.
  * ============================================================================
  */
 
@@ -49,8 +49,9 @@
 #include "security/session.h"
 #include "security/revoke.h"
 #include "security/quota.h"
+#include "security/grant.h"   /* Fix: For bowie_grant_t full definition */
 #include "net/peer.h"
-#include "engine/internal/event.h" /* For bowie_engine_event_queue_t */
+#include "engine/internal/event.h"
 
 #ifdef __cplusplus
 extern "C" {
