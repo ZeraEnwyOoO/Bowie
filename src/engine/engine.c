@@ -391,6 +391,7 @@ fail_dht_alloc:
     pthread_mutex_unlock(&e->lock);
     return rc;
 }
+
 bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
                                          const char *ip,
                                          uint16_t port)
@@ -398,22 +399,60 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
     if (e == NULL || ip == NULL) {
         return BOWIE_ERR_NULL_ARG;
     }
+    
+    pthread_mutex_lock(&e->lock);
     if (e->state != BOWIE_ENGINE_STARTED) {
+        pthread_mutex_unlock(&e->lock);
         return BOWIE_ERR_STATE;
     }
 
-    // Add the bootstrap node to the DHT's routing table
-    // (We'll just use the DHT's config to add it)
-    // Note: This is a simplified version. The DHT config
-    // is already copied into the DHT struct.
-    bowie_dht_bootstrap_t *b = &e->dht->config.bootstrap[e->dht->config.bootstrap_count];
-    strncpy(b->host, ip, BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1);
-    b->host[BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1] = '\0';
-    b->port = port;
-    e->dht->config.bootstrap_count++;
+    // 1. Parse IP string to bytes (simple IPv4 parser)
+    unsigned int a, b2, c, d;
+    if (sscanf(ip, "%u.%u.%u.%u", &a, &b2, &c, &d) != 4 ||
+        a > 255 || b2 > 255 || c > 255 || d > 255) {
+        pthread_mutex_unlock(&e->lock);
+        return BOWIE_ERR_INVAL;
+    }
 
-    return BOWIE_OK;
+    bowie_addr_t addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.family = BOWIE_AF_INET;
+    addr.port = port;
+    addr.addr[0] = (uint8_t)a;
+    addr.addr[1] = (uint8_t)b2;
+    addr.addr[2] = (uint8_t)c;
+    addr.addr[3] = (uint8_t)d;
+
+    // 2. (Optional) Add to DHT config for future restarts
+    if (e->dht->config.bootstrap_count < BOWIE_DHT_BOOTSTRAP_MAX) {
+        bowie_dht_bootstrap_t *b = &e->dht->config.bootstrap[e->dht->config.bootstrap_count];
+        strncpy(b->host, ip, BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1);
+        b->host[BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1] = '\0';
+        b->port = port;
+        e->dht->config.bootstrap_count++;
+    }
+
+    // 3. Construct and send a PING query to kickstart the DHT
+    bowie_dht_message_t q;
+    uint8_t tid[2] = {0x01, 0x02}; // Simple transaction ID
+    bowie_error_t rc = bowie_dht_make_query(e->dht, BOWIE_DHT_QUERY_PING, 
+                                             NULL, NULL, tid, sizeof(tid), &q);
+    if (rc != BOWIE_OK) {
+        pthread_mutex_unlock(&e->lock);
+        return rc;
+    }
+
+    rc = bowie_dht_send_query(e->dht, &addr, &q);
+    
+    pthread_mutex_unlock(&e->lock);
+
+    if (rc == BOWIE_OK) {
+        ENGINE_LOG(BOWIE_LOG_INFO, "Sent PING to bootstrap node %s:%u", ip, port);
+    }
+    
+    return rc;
 }
+
 /*
  * ============================================================================
  * LIFECYCLE — STOP
