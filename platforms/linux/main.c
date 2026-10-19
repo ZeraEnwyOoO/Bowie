@@ -20,25 +20,6 @@
  * ============================================================================
  * BOWIE — LINUX ENTRY POINT (CLI)
  * ============================================================================
- *
- * This is the Linux entry point for the Bowie tool. It is a
- * command line interface that brings up the engine, opens the
- * tunnel, and joins the network.
- *
- * ----------------------------------------------------------------------------
- * Usage
- * ----------------------------------------------------------------------------
- *
- *   bowie start             Start the engine and wait for peers.
- *   bowie connect <peer_id> Connect to a specific peer (hex peer ID).
- *   bowie bootstrap <ip> <port>  Add a bootstrap node to the DHT.
- *   bowie status            Print the current engine status.
- *   bowie stop              Stop the engine and exit.
- *
- * The CLI is intentionally small. A full UI is a future
- * feature; the CLI is what a user runs to test the engine.
- *
- * ============================================================================
  */
 
 #include <stdio.h>
@@ -47,13 +28,19 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <zlog.h>   /* <--- បន្ថែម zlog */
+
 #include "bowie/types.h"
 #include "bowie/err.h"
+#include "bowie/hooks.h"
 #include "engine/engine.h"
 #include "tunnel/tun_linux.h"
 
 /* Global flag for graceful shutdown */
 static volatile sig_atomic_t g_running = 1;
+
+/* Global zlog category */
+static zlog_category_t *g_log_cat = NULL;
 
 static void handle_sigint(int sig) {
     (void)sig;
@@ -78,6 +65,32 @@ static int parse_peer_id(const char *hex, bowie_peer_id_t *out) {
     return 0;
 }
 
+/* ============================================================================
+ * zlog Hook
+ * ============================================================================
+ *
+ * This is the bridge between Bowie's internal log hooks and
+ * zlog's category-based logging. The engine calls this hook
+ * for every log line; the hook maps the level to a zlog
+ * macro and emits the line.
+ */
+static void bowie_log_hook(bowie_log_level_t level,
+                           const char *line,
+                           void *userdata)
+{
+    (void)userdata;
+    if (g_log_cat == NULL) return;
+
+    switch (level) {
+    case BOWIE_LOG_ERROR: zlog_error(g_log_cat, "%s", line); break;
+    case BOWIE_LOG_WARN:  zlog_warn(g_log_cat, "%s", line);  break;
+    case BOWIE_LOG_INFO:  zlog_info(g_log_cat, "%s", line);  break;
+    case BOWIE_LOG_DEBUG: zlog_debug(g_log_cat, "%s", line); break;
+    case BOWIE_LOG_TRACE: zlog_debug(g_log_cat, "[TRACE] %s", line); break;
+    default: break;
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <command> [args]\n", argv[0]);
@@ -92,12 +105,35 @@ int main(int argc, char **argv) {
     /* Setup signal handler for Ctrl+C */
     signal(SIGINT, handle_sigint);
 
-    /* Initialize the engine with default configuration */
+    /* --------------------------------------------------------------------
+     * Initialize zlog
+     * --------------------------------------------------------------------
+     *
+     * The configuration file is read from the project root.
+     * A caller that runs the binary from a different directory
+     * must pass an absolute path.
+     */
+    int rc_zlog = zlog_init("zlog.conf");
+    if (rc_zlog != 0) {
+        fprintf(stderr, "zlog_init failed. Is zlog.conf in the current directory?\n");
+        return 1;
+    }
+
+    g_log_cat = zlog_get_category("bowie.engine");
+    if (g_log_cat == NULL) {
+        fprintf(stderr, "zlog_get_category failed\n");
+        zlog_fini();
+        return 1;
+    }
+
+    /* --------------------------------------------------------------------
+     * Initialize the engine
+     * --------------------------------------------------------------------
+     */
     bowie_engine_config_t cfg;
     bowie_engine_default_config(&cfg);
 
     // Set log level to DEBUG to see detailed logs
-    // (You can change this to BOWIE_LOG_INFO for normal use)
     cfg.log_level = BOWIE_LOG_DEBUG;
 
     cfg.dht_port = 0;  /* Let OS choose */
@@ -107,6 +143,21 @@ int main(int argc, char **argv) {
     bowie_error_t rc = bowie_engine_new(&cfg, &engine);
     if (rc != BOWIE_OK) {
         fprintf(stderr, "Failed to create engine: %s\n", bowie_err_strerror(rc));
+        zlog_fini();
+        return 1;
+    }
+
+    /* Install the log hook */
+    bowie_hooks_t hooks;
+    bowie_hooks_clear(&hooks);
+    hooks.log = bowie_log_hook;
+    // Add other hooks here if needed
+
+    rc = bowie_engine_set_hooks(engine, &hooks);
+    if (rc != BOWIE_OK) {
+        fprintf(stderr, "Failed to set hooks: %s\n", bowie_err_strerror(rc));
+        bowie_engine_free(engine);
+        zlog_fini();
         return 1;
     }
 
@@ -117,6 +168,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to open TUN device: %s\n", bowie_err_strerror(rc));
         fprintf(stderr, "Hint: Are you running as root? (CAP_NET_ADMIN required)\n");
         bowie_engine_free(engine);
+        zlog_fini();
         return 1;
     }
 
@@ -126,6 +178,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to start engine: %s\n", bowie_err_strerror(rc));
         bowie_tun_close(tun);
         bowie_engine_free(engine);
+        zlog_fini();
         return 1;
     }
 
@@ -186,7 +239,6 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
 
-        // បង្ហាញវានៅទីនេះជំនួសវិញ
         printf("[Bowie] Successfully added bootstrap node: %s:%u\n", ip, port);
         printf("[Bowie] Bootstrap successful! DHT is now connected.\n");
         printf("[Bowie] Waiting... Press Ctrl+C to stop.\n");
@@ -219,6 +271,7 @@ cleanup:
     bowie_engine_stop(engine);
     bowie_engine_free(engine);
     bowie_tun_close(tun);
+    zlog_fini(); // <--- បន្ថែមការបិទ zlog
 
     return 0;
 }
