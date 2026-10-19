@@ -1,4 +1,4 @@
-/*
+ /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
  *
@@ -31,6 +31,7 @@
  *
  *   bowie start             Start the engine and wait for peers.
  *   bowie connect <peer_id> Connect to a specific peer (hex peer ID).
+ *   bowie bootstrap <ip> <port>  Add a bootstrap node to the DHT.
  *   bowie status            Print the current engine status.
  *   bowie stop              Stop the engine and exit.
  *
@@ -83,6 +84,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Commands:\n");
         fprintf(stderr, "  start             Start the engine\n");
         fprintf(stderr, "  connect <peer_id> Connect to a peer (hex ID)\n");
+        fprintf(stderr, "  bootstrap <ip> <port>  Add a bootstrap node\n");
         fprintf(stderr, "  status            Show engine status\n");
         return 1;
     }
@@ -162,7 +164,7 @@ int main(int argc, char **argv) {
         }
         printf("\n[Bowie] Shutting down...\n");
     } 
-        else if (strcmp(argv[1], "bootstrap") == 0) {
+    else if (strcmp(argv[1], "bootstrap") == 0) {
         if (argc < 4) {
             fprintf(stderr, "Usage: %s bootstrap <ip> <port>\n", argv[0]);
             goto cleanup;
@@ -179,6 +181,8 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
 
+        // បង្ហាញវានៅទីនេះជំនួសវិញ
+        printf("[Bowie] Successfully added bootstrap node: %s:%u\n", ip, port);
         printf("[Bowie] Bootstrap successful! DHT is now connected.\n");
         printf("[Bowie] Waiting... Press Ctrl+C to stop.\n");
 
