@@ -80,6 +80,7 @@
  */
 
 #include <openssl/evp.h>
+#include <openssl/kdf.h>
 
 #include "bowie/err.h"
 #include "security/kdf.h"
