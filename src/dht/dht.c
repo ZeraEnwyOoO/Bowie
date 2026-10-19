@@ -810,6 +810,55 @@ size_t bowie_dht_peer_count(const bowie_dht_t *dht)
     return bowie_dht_storage_peer_count(&dht->storage);
 }
 
+
+bowie_error_t bowie_dht_send_query(
+    bowie_dht_t               *dht,
+    const bowie_addr_t        *to,
+    const bowie_dht_message_t *msg)
+{
+    uint8_t                buf[BOWIE_DHT_PACKET_MAX];
+    bowie_bencode_writer_t writer;
+    struct sockaddr_in     sin;
+    bowie_error_t          rc;
+    ssize_t                sent;
+
+    if (dht == NULL || to == NULL || msg == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    if (!dht->running || dht->socket_fd < 0) {
+        return BOWIE_ERR_STATE;
+    }
+    if (to->family != BOWIE_AF_INET) {
+        return BOWIE_ERR_INVAL;
+    }
+
+    bowie_bencode_writer_init(&writer, buf, sizeof(buf));
+
+    rc = bowie_dht_message_serialize(msg, &writer);
+    if (rc != BOWIE_OK) {
+        return rc;
+    }
+    if (writer.pos == 0u) {
+        return BOWIE_ERR_INTERNAL;
+    }
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    memcpy(&sin.sin_addr, to->addr, 4);
+    sin.sin_port = htons(to->port);
+
+    sent = sendto(dht->socket_fd, buf, writer.pos, 0,
+                  (struct sockaddr *)&sin, sizeof(sin));
+
+    if (sent < 0) {
+        return BOWIE_ERR_NETWORK;
+    }
+    if ((size_t)sent != writer.pos) {
+        return BOWIE_ERR_NETWORK;
+    }
+
+    return BOWIE_OK;
+}
 /*
  * ============================================================================
  * END OF DHT ENGINE IMPLEMENTATION
