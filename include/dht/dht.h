@@ -1,3 +1,4 @@
+ 
  /*
  * Bowie — P2P Internet Sharing Tool (Repo: bowie)
  * Copyright (C) 2026 ASBM Team
@@ -25,23 +26,17 @@
  * routing table, the storage, the token state, and the
  * security state together.
  *
- * The engine is a value type. The caller supplies the arrays
- * that the routing table and the storage use. The engine
- * does not allocate.
- *
- * The engine is the layer that the rest of Bowie talks to.
- * The DHT engine receives a message, applies the security
- * checks, and produces a response. The DHT engine creates a
- * query for a target. The DHT engine runs the periodic
- * maintenance.
+ * The engine owns a background thread that receives packets,
+ * parses them, handles them, and sends responses. The caller
+ * drives the engine through the public functions; the thread
+ * runs on its own.
  *
  * ----------------------------------------------------------------------------
  * What this file does NOT do
  * ----------------------------------------------------------------------------
  *
- *   - No network. The caller sends and receives packets.
- *   - No allocation. The caller supplies the arrays.
- *   - No thread safety. The caller serializes access.
+ *   - No allocation of the routing or storage arrays. The
+ *     caller supplies them.
  *   - No search orchestration. The search state machine is
  *     in search.h; the engine creates queries and handles
  *     responses, but the caller drives the search.
@@ -50,6 +45,15 @@
  * ----------------------------------------------------------------------------
  * Design notes
  * ----------------------------------------------------------------------------
+ *
+ * The engine has three states: uninitialized, initialized,
+ * and running. A caller initializes the engine with
+ * bowie_dht_init(), starts the background thread with
+ * bowie_dht_start(), and stops it with bowie_dht_stop().
+ *
+ * The background thread owns the socket. The caller does not
+ * see the socket; it can send queries through the engine's
+ * query functions.
  *
  * The engine holds:
  *
@@ -60,61 +64,28 @@
  *   token_state   the token generator state
  *   security      the security state
  *   last_refresh  the time of the last refresh tick
+ *   socket        the UDP socket (owned by the thread)
+ *   thread        the background thread
+ *   running       1 when the thread is running
+ *   stop_request  set to 1 to ask the thread to stop
  *
- * The routing table and the storage are value types with
- * caller-supplied arrays. The engine copies the config, the
- * local ID, and the state, but not the arrays; the arrays
- * are shared with the caller and the engine writes into
- * them.
- *
- * The engine's message handler is a state machine over the
- * message type:
- *
- *   QUERY     process the query and produce a response
- *   RESPONSE  process the response; the caller updates the
- *             search and the routing table
- *   ERROR     log and ignore
- *
- * The engine's query builder produces a query message from a
- * target and a query type. The caller sends the message.
- *
- * The engine's tick function runs the periodic maintenance:
- *
- *   - rotate the token secret when the interval has elapsed
- *   - expire the stale peer entries
- *   - refresh a routing bucket when the interval has elapsed
- *
- * The refresh is a find_node query for a random ID in the
- * bucket's range. The engine does not send the query; the
- * tick function returns the refresh query through an out
- * parameter, and the caller sends it.
+ * The arenas used by the thread are stored in the engine,
+ * not as static variables. This allows two DHT engines to
+ * run in the same process without sharing buffers.
  *
  * ----------------------------------------------------------------------------
  * Message handling
  * ----------------------------------------------------------------------------
  *
+ * The background thread reads a packet, parses it, and calls
+ * the message handler. The handler produces a response; the
+ * thread serializes the response and sends it.
+ *
  * A query message that the engine accepts produces a
- * response. The response is built in a caller-supplied
- * message struct. The caller serializes the message and
- * sends it.
- *
- * A query message that the engine rejects (because of a
- * security check) produces an error response. The error code
- * and message are set in the response struct.
- *
- * A response message is not answered. The caller updates the
- * routing table and the search. The engine's handler updates
- * the routing table on the caller's behalf.
- *
- * A message that is malformed or that has an unknown type is
- * ignored. The caller does not send a response.
- *
- * The response's node and peer arrays are caller-supplied.
- * The caller passes a message arena to the handler; the
- * handler writes the response's nodes and peers into the
- * arena. The arena is the same type that the message layer
- * uses. The caller owns the arena and keeps it alive for as
- * long as the response is used.
+ * response. A query message that the engine rejects
+ * (because of a security check) produces an error response.
+ * A response message updates the routing table and the
+ * search; it is not answered. An error message is ignored.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -122,6 +93,7 @@
  *
  *   <stdint.h>                   uint8_t, uint32_t
  *   <stddef.h>                   size_t
+ *   <pthread.h>                  pthread_t
  *   "bowie/types.h"              bowie_addr_t, bowie_mtime_t
  *   "bowie/err.h"                error codes
  *   "dht/types.h"                node id, info hash, token
@@ -132,6 +104,7 @@
  *   "dht/token.h"                the token state
  *   "dht/security.h"             the security state
  *   "dht/message.h"              the message struct
+ *   "dht/bencode.h"              the bencode arena
  *   "dht/config.h"               the config
  * ============================================================================
  */
@@ -141,6 +114,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <pthread.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
@@ -152,6 +126,7 @@
 #include "dht/token.h"
 #include "dht/security.h"
 #include "dht/message.h"
+#include "dht/bencode.h"
 #include "dht/config.h"
 
 #ifdef __cplusplus
@@ -163,9 +138,9 @@ extern "C" {
  * DHT ENGINE
  * ============================================================================
  *
- * The engine state. The struct is transparent; a caller may
- * read the fields. The arrays are borrowed from the caller
- * and are not owned by the engine.
+ * The engine state. The struct is transparent for the
+ * fields that the caller may read; the socket and the
+ * thread are private.
  */
 
 typedef struct bowie_dht {
@@ -177,6 +152,33 @@ typedef struct bowie_dht {
     bowie_dht_security_t     security;
     bowie_mtime_t            last_refresh_ms;
     int                      initialized;
+
+    /*
+     * The background thread and the socket it owns.
+     * A caller must not touch these fields; they are
+     * used by the engine's thread.
+     */
+    int                      socket_fd;
+    pthread_t                thread;
+    int                      running;
+    int                      stop_requested;
+
+    /*
+     * The arenas used by the thread. They are stored in
+     * the engine so that two engines in the same process
+     * do not share buffers.
+     *
+     * The bencode arena holds the decoded tree of the
+     * current packet. The message arena holds the
+     * compact node and peer lists.
+     */
+    bowie_bencode_value_t      benc_values[512];
+    bowie_bencode_dict_entry_t benc_entries[256];
+    bowie_bencode_arena_t      benc_arena;
+
+    bowie_dht_compact_node_t   msg_nodes[64];
+    bowie_dht_compact_peer_t   msg_peers[64];
+    bowie_dht_message_arena_t  msg_arena;
 } bowie_dht_t;
 
 /*
@@ -203,13 +205,9 @@ typedef struct bowie_dht {
  *   rate_limits_cap its capacity
  *   now_ms          the current monotonic time
  *
- * The routing table is initialized from the local ID. The
- * storage is initialized from the config. The token state is
- * initialized with a rotation interval from the config. The
- * security state is initialized with the level from the
- * config.
- *
- * The config is normalized before it is copied.
+ * The engine does not open a socket or start a thread in
+ * this function. The caller does that with
+ * bowie_dht_start().
  *
  * Returns BOWIE_OK on success.
  * Returns BOWIE_ERR_NULL_ARG if dht, config, or local_id is
@@ -233,10 +231,48 @@ bowie_error_t bowie_dht_init(
     bowie_mtime_t                   now_ms);
 
 /*
+ * Start the DHT background thread.
+ *
+ * The engine must have been initialized with bowie_dht_init().
+ * The function opens a UDP socket on the given port, binds it,
+ * and starts a thread that receives packets and handles them.
+ *
+ * A port of 0 means "let the operating system choose a port".
+ * The chosen port is available in the engine's config after
+ * the call.
+ *
+ * The thread is the DHT's message loop. It calls
+ * bowie_dht_handle_message() for every packet and sends the
+ * response, if any. The caller does not see the socket.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NULL_ARG if dht is NULL.
+ * Returns BOWIE_ERR_INVAL if the engine is not initialized.
+ * Returns BOWIE_ERR_STATE if the engine is already running.
+ * Returns BOWIE_ERR_NETWORK if the socket cannot be opened.
+ * Returns BOWIE_ERR_INTERNAL if the thread cannot be
+ *   created.
+ */
+bowie_error_t bowie_dht_start(bowie_dht_t *dht, uint16_t port);
+
+/*
+ * Stop the DHT background thread.
+ *
+ * The function asks the thread to stop, waits for it to
+ * exit, and closes the socket.
+ *
+ * Passing NULL is a no-op.
+ *
+ * Returns BOWIE_OK on success.
+ * Returns BOWIE_ERR_NOT_STARTED if the engine is not running.
+ */
+bowie_error_t bowie_dht_stop(bowie_dht_t *dht);
+
+/*
  * Shut down a DHT engine.
  *
- * The state is cleared. The arrays are not freed; the caller
- * owns them.
+ * The thread is stopped first. The state is cleared. The
+ * arrays are not freed; the caller owns them.
  *
  * Passing NULL is a no-op.
  */
