@@ -1,210 +1,104 @@
- # ============================================================================
-# Bowie — Makefile (Prototype Phase)
-# ============================================================================
+ /*
+ * Bowie — P2P Internet Sharing Tool (Repo: bowie)
+ * Copyright (C) 2026 ASBM Team
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
-CC      ?= cc
-AR      ?= ar
-RANLIB  ?= ranlib
+/*
+ * ============================================================================
+ * BOWIE — LINUX ENTRY POINT (MINIMAL)
+ * ============================================================================
+ *
+ * This is a minimal entry point to test the engine and the TUN
+ * device. It does not depend on log.c or config.c. It uses
+ * printf directly for output.
+ * ============================================================================
+ */
 
-# ----------------------------------------------------------------------------
-# Platform selection
-# ----------------------------------------------------------------------------
-PLATFORM ?= linux
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
 
-ifeq ($(PLATFORM),linux)
-PLATFORM_DEFS := -DBOWIE_PLATFORM_LINUX
-PLATFORM_SRCS := \
-    src/platform/posix/init.c \
-    src/platform/posix/time.c \
-    src/platform/posix/rand.c \
-    src/platform/posix/log.c \
-    src/platform/posix/sock.c \
-    src/platform/linux/netlink.c
-else
-$(error Unknown PLATFORM: $(PLATFORM). Use linux.)
-endif
+#include "bowie/types.h"
+#include "bowie/err.h"
+#include "engine/engine.h"
+#include "tunnel/tun_linux.h"
 
-# ----------------------------------------------------------------------------
-# NAT Backend
-# ----------------------------------------------------------------------------
-NAT_BACKEND ?= libjuice
+static volatile sig_atomic_t g_running = 1;
 
-ifeq ($(NAT_BACKEND),libjuice)
-NAT_SRCS := src/nat/nat_libjuice.c
-NAT_LIBS := -ljuice
-else
-$(error Unknown NAT_BACKEND: $(NAT_BACKEND). Use libjuice.)
-endif
+static void on_signal(int sig) {
+    (void)sig;
+    g_running = 0;
+}
 
-# ----------------------------------------------------------------------------
-# Tunnel Backend
-# ----------------------------------------------------------------------------
-TUNNEL_BACKEND ?= linux
+int main(void) {
+    bowie_tun_t *tun = NULL;
+    bowie_engine_t *engine = NULL;
+    bowie_engine_config_t cfg;
+    bowie_error_t rc;
 
-ifeq ($(TUNNEL_BACKEND),linux)
-TUNNEL_SRCS := src/tunnel/tun_linux.c
-else
-$(error Unknown TUNNEL_BACKEND: $(TUNNEL_BACKEND). Use linux.)
-endif
+    printf("Bowie Linux Client starting...\n");
 
-# ----------------------------------------------------------------------------
-# Flags
-# ----------------------------------------------------------------------------
-CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -Werror
-CFLAGS  += -g -O0
-CFLAGS  += -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
-CFLAGS  += $(PLATFORM_DEFS)
+    /* 1. Setup signal handler */
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
 
-CFLAGS  += -Iinclude
-CFLAGS  += -Isrc
-CFLAGS  += -Itests
+    /* 2. Open TUN device */
+    rc = bowie_tun_open(&tun, "tun0", 0);
+    if (rc != BOWIE_OK) {
+        fprintf(stderr, "Failed to open TUN device (Error %d).\n", rc);
+        fprintf(stderr, "Hint: Are you running as root? (CAP_NET_ADMIN required)\n");
+        return EXIT_FAILURE;
+    }
+    printf("TUN device 'tun0' opened successfully.\n");
 
-CFLAGS  += -MMD -MP
+    /* 3. Create Engine */
+    bowie_engine_default_config(&cfg);
+    rc = bowie_engine_new(&cfg, &engine);
+    if (rc != BOWIE_OK) {
+        fprintf(stderr, "Failed to create engine (Error %d).\n", rc);
+        bowie_tun_close(tun);
+        return EXIT_FAILURE;
+    }
+    printf("Engine created.\n");
 
-# OpenSSL
-CFLAGS  += $(shell pkg-config --cflags libcrypto)
-LDLIBS  += $(shell pkg-config --libs libcrypto)
-LDLIBS  += -lcrypto
+    /* 4. Start Engine */
+    rc = bowie_engine_start(engine, tun);
+    if (rc != BOWIE_OK) {
+        fprintf(stderr, "Failed to start engine (Error %d).\n", rc);
+        bowie_engine_free(engine);
+        bowie_tun_close(tun);
+        return EXIT_FAILURE;
+    }
+    printf("Engine started successfully.\n");
+    printf("DHT Port: %u, Signal Port: %u\n",
+           bowie_engine_dht_port(engine),
+           bowie_engine_signal_port(engine));
 
-# Check framework and pthread
-LDLIBS  += -lm -lpthread -lrt
+    /* 5. Wait for signal */
+    printf("Press Ctrl+C to stop.\n");
+    while (g_running) {
+        sleep(1);
+    }
 
-# NAT backend libraries
-LDLIBS  += $(NAT_LIBS)
+    /* 6. Cleanup */
+    printf("Shutting down...\n");
+    bowie_engine_stop(engine);
+    bowie_engine_free(engine);
+    bowie_tun_close(tun);
 
-# ----------------------------------------------------------------------------
-# Directories
-# ----------------------------------------------------------------------------
-BUILD_DIR   := build
-OBJ_DIR     := $(BUILD_DIR)/obj
-LIB         := $(BUILD_DIR)/libbowie.a
-APP_BIN     := $(BUILD_DIR)/bowie-linux
-
-# ----------------------------------------------------------------------------
-# Sources — Library
-# ----------------------------------------------------------------------------
-LIB_SRCS := \
-    src/api/version.c \
-    src/api/types.c \
-    src/api/err.c \
-    src/api/config.c \
-    src/api/hooks.c \
-    src/core/endian.c \
-    src/core/mem.c \
-    src/core/bytes.c \
-    src/core/time.c \
-    src/core/rand.c \
-    src/core/log.c \
-    src/core/sock.c \
-    src/crypto/hash.c \
-    src/crypto/cipher.c \
-    src/crypto/sign.c \
-    src/crypto/keypair.c \
-    src/net/capabilities.c \
-    src/net/peer.c \
-    src/dht/types.c \
-    src/dht/bencode.c \
-    src/dht/message.c \
-    src/dht/node.c \
-    src/dht/bucket.c \
-    src/dht/routing.c \
-    src/dht/storage.c \
-    src/dht/token.c \
-    src/dht/security.c \
-    src/dht/search.c \
-    src/dht/config.c \
-    src/dht/dht.c \
-    src/proto/message.c \
-    src/proto/framing.c \
-    src/proto/handshake.c \
-    src/proto/stream.c \
-    src/nat/nat.c \
-    src/tunnel/mtu.c \
-    src/tunnel/packet.c \
-    src/security/grant.c \
-    src/security/ownership.c \
-    src/security/revoke.c \
-    src/security/session.c \
-    src/security/permission.c \
-    src/security/sign.c \
-    src/security/keypair.c \
-    src/security/kdf.c \
-    src/gateway/gateway.c \
-    src/gateway/ip_forward.c \
-    src/gateway/conntrack.c \
-    src/gateway/route.c \
-    src/engine/engine.c \
-    src/engine/state.c \
-    src/engine/event.c \
-    src/engine/signal.c \
-    $(PLATFORM_SRCS) \
-    $(NAT_SRCS) \
-    $(TUNNEL_SRCS)
-
-LIB_OBJS := $(LIB_SRCS:src/%.c=$(OBJ_DIR)/%.o)
-
-# ----------------------------------------------------------------------------
-# Sources — App
-# ----------------------------------------------------------------------------
-APP_SRCS := platforms/linux/main.c
-APP_OBJS := $(APP_SRCS:platforms/linux/%.c=$(OBJ_DIR)/platforms/linux/%.o)
-
-# ----------------------------------------------------------------------------
-# Targets
-# ----------------------------------------------------------------------------
-.PHONY: all app clean help
-
-all: $(LIB) $(APP_BIN)
-
-# ----------------------------------------------------------------------------
-# Library
-# ----------------------------------------------------------------------------
-$(LIB): $(LIB_OBJS)
-	@mkdir -p $(dir $@)
-	$(AR) rcs $@ $^
-	$(RANLIB) $@
-	@echo "  AR      $@"
-
-$(OBJ_DIR)/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-	@echo "  CC      $<"
-
-# ----------------------------------------------------------------------------
-# App
-# ----------------------------------------------------------------------------
-$(OBJ_DIR)/platforms/linux/%.o: platforms/linux/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
-	@echo "  CC      $<"
-
-$(APP_BIN): $(APP_OBJS) $(LIB)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(APP_OBJS) $(LIB) $(LDLIBS) -o $@
-	@echo "  LD      $@"
-
-app: $(APP_BIN)
-
-# ----------------------------------------------------------------------------
-# Clean
-# ----------------------------------------------------------------------------
-clean:
-	rm -rf $(BUILD_DIR)
-	@echo "  CLEAN   $(BUILD_DIR)"
-
-# ----------------------------------------------------------------------------
-# Help
-# ----------------------------------------------------------------------------
-help:
-	@echo "Bowie — Makefile targets:"
-	@echo
-	@echo "  all      build the static library and the linux executable (default)"
-	@echo "  app      build only the linux executable"
-	@echo "  clean    remove the build directory"
-	@echo "  help     print this help"
-
-# ----------------------------------------------------------------------------
-# Header dependencies
-# ----------------------------------------------------------------------------
--include $(LIB_OBJS:.o=.d)
--include $(APP_OBJS:.o=.d)
+    return EXIT_SUCCESS;
+}
