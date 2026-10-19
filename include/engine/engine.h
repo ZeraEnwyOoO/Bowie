@@ -102,6 +102,10 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
+#include "bowie/hooks.h"       
+#include "dht/types.h"         
+#include "dht/node.h"          
+#include "security/sign.h"    
 
 #ifdef __cplusplus
 extern "C" {
