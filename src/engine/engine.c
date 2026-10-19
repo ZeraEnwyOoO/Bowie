@@ -47,10 +47,9 @@
 #include "security/session.h"
 #include "security/sign.h"
 #include "security/quota.h"
-#include "security/kdf.h"         /* Newly added */
-#include "proto/stream.h"         /* Newly added */
-#include "crypto/hash.h"          /*  for  bowie_hash_sha1 */
-#include "security/sign.h"        /* for bowie_security_sign_generate */
+#include "security/kdf.h"
+#include "proto/stream.h"
+#include "crypto/hash.h"
 #include "net/peer.h"
 #include "engine/engine.h"
 #include "engine/internal/engine.h"
@@ -67,17 +66,19 @@
 static bowie_log_t g_engine_log;
 static int         g_engine_log_ready = 0;
 
-static void engine_log_init(void)
+static void engine_log_init(bowie_log_level_t level)
 {
     if (!g_engine_log_ready) {
-        bowie_log_init(&g_engine_log, NULL, BOWIE_LOG_INFO);
+        bowie_log_init(&g_engine_log, NULL, level);
         g_engine_log_ready = 1;
+    } else {
+        g_engine_log.level = level;
     }
 }
 
 #define ENGINE_LOG(level, ...) \
     do { \
-        engine_log_init(); \
+        engine_log_init(level); \
         bowie_log_emit(&g_engine_log, (level), __VA_ARGS__); \
     } while (0)
 
@@ -91,18 +92,12 @@ static bowie_error_t derive_ids(bowie_engine_t *e)
 {
     bowie_hash_sha1_t h;
 
-    if (e == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
+    if (e == NULL) return BOWIE_ERR_NULL_ARG;
 
-    memcpy(e->own_public_id.bytes, e->own_sign_pub.bytes,
-           BOWIE_PUBLIC_ID_LEN);
+    memcpy(e->own_public_id.bytes, e->own_sign_pub.bytes, BOWIE_PUBLIC_ID_LEN);
 
-    bowie_error_t rc = bowie_hash_sha1(e->own_public_id.bytes,
-                                        BOWIE_PUBLIC_ID_LEN, &h);
-    if (rc != BOWIE_OK) {
-        return rc;
-    }
+    bowie_error_t rc = bowie_hash_sha1(e->own_public_id.bytes, BOWIE_PUBLIC_ID_LEN, &h);
+    if (rc != BOWIE_OK) return rc;
 
     memcpy(e->own_peer_id.bytes, h.bytes, BOWIE_PEER_ID_LEN);
     memcpy(e->own_dht_id.bytes, h.bytes, BOWIE_DHT_NODE_ID_LEN);
@@ -116,8 +111,7 @@ static bowie_error_t derive_ids(bowie_engine_t *e)
  * ============================================================================
  */
 
-static void make_dht_config(const bowie_engine_config_t *cfg,
-                            bowie_dht_config_t *out)
+static void make_dht_config(const bowie_engine_config_t *cfg, bowie_dht_config_t *out)
 {
     memset(out, 0, sizeof(*out));
 
@@ -143,8 +137,7 @@ static void make_dht_config(const bowie_engine_config_t *cfg,
  * ============================================================================
  */
 
-static void make_nat_config(const bowie_engine_config_t *cfg,
-                            bowie_nat_config_t *out)
+static void make_nat_config(const bowie_engine_config_t *cfg, bowie_nat_config_t *out)
 {
     bowie_nat_default_config(out);
 
@@ -153,7 +146,6 @@ static void make_nat_config(const bowie_engine_config_t *cfg,
     if (cfg->allow_server) {
         out->stun_server_host = cfg->stun_host;
         out->stun_server_port = cfg->stun_port;
-
         out->turn_server_host = cfg->turn_host;
         out->turn_server_port = cfg->turn_port;
         out->turn_username    = cfg->turn_user;
@@ -174,39 +166,33 @@ static bowie_error_t exchange_x25519(bowie_proto_stream_t *stream,
                                      bowie_keypair_public_t *out_remote_pub,
                                      int initiator)
 {
-    uint8_t        buf[BOWIE_KEYPAIR_PUBLIC_LEN];
-    size_t         n = 0u;
-    bowie_error_t  rc;
-    int            retries;
+    uint8_t buf[BOWIE_KEYPAIR_PUBLIC_LEN];
+    size_t n = 0u;
+    bowie_error_t rc;
+    int retries;
 
     if (initiator) {
-        /* 1. Send our public key. */
         rc = bowie_proto_stream_write_msg(stream, local_pub->bytes, BOWIE_KEYPAIR_PUBLIC_LEN);
         if (rc != BOWIE_OK) return rc;
 
-        /* 2. Receive the peer's public key. */
         for (retries = 0; retries < 100; retries++) {
             rc = bowie_proto_stream_read_msg(stream, buf, sizeof(buf), &n);
             if (rc == BOWIE_OK) break;
             if (rc != BOWIE_ERR_AGAIN) return rc;
-            
             struct timespec ts = { 0, 10000000L };
             nanosleep(&ts, NULL);
         }
         if (rc != BOWIE_OK) return BOWIE_ERR_TIMEOUT;
     } else {
-        /* 1. Receive the peer's public key. */
         for (retries = 0; retries < 100; retries++) {
             rc = bowie_proto_stream_read_msg(stream, buf, sizeof(buf), &n);
             if (rc == BOWIE_OK) break;
             if (rc != BOWIE_ERR_AGAIN) return rc;
-            
             struct timespec ts = { 0, 10000000L };
             nanosleep(&ts, NULL);
         }
         if (rc != BOWIE_OK) return BOWIE_ERR_TIMEOUT;
 
-        /* 2. Send our public key. */
         rc = bowie_proto_stream_write_msg(stream, local_pub->bytes, BOWIE_KEYPAIR_PUBLIC_LEN);
         if (rc != BOWIE_OK) return rc;
     }
@@ -238,6 +224,7 @@ void bowie_engine_default_config(bowie_engine_config_t *cfg)
     cfg->turn_user      = NULL;
     cfg->turn_pass      = NULL;
     cfg->tunnel_mtu     = 0;
+    cfg->log_level      = BOWIE_LOG_INFO; // Default log level
 }
 
 /*
@@ -249,7 +236,7 @@ void bowie_engine_default_config(bowie_engine_config_t *cfg)
 bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t **out)
 {
     bowie_engine_t *e;
-    bowie_error_t   rc;
+    bowie_error_t rc;
 
     if (out == NULL) return BOWIE_ERR_NULL_ARG;
     *out = NULL;
@@ -257,6 +244,7 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     e = (bowie_engine_t *)calloc(1, sizeof(*e));
     if (e == NULL) return BOWIE_ERR_NOMEM;
 
+    // Initialize mutex
     {
         pthread_mutexattr_t attr;
         if (pthread_mutexattr_init(&attr) != 0) { free(e); return BOWIE_ERR_INTERNAL; }
@@ -273,6 +261,9 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
 
     if (cfg != NULL) e->cfg = *cfg;
     else bowie_engine_default_config(&e->cfg);
+
+    // Initialize logging with the configured level
+    engine_log_init(e->cfg.log_level);
 
     rc = bowie_security_sign_generate(&e->own_sign_pub, &e->own_sign_priv);
     if (rc != BOWIE_OK) {
@@ -321,9 +312,9 @@ void bowie_engine_free(bowie_engine_t *e)
 
 bowie_error_t bowie_engine_start(bowie_engine_t *e, bowie_tun_t *tun)
 {
-    bowie_dht_config_t  dht_cfg;
-    bowie_nat_config_t  nat_cfg;
-    bowie_error_t       rc;
+    bowie_dht_config_t dht_cfg;
+    bowie_nat_config_t nat_cfg;
+    bowie_error_t rc;
 
     if (e == NULL) return BOWIE_ERR_NULL_ARG;
     if (e->state != BOWIE_ENGINE_STOPPED) return BOWIE_ERR_STATE;
@@ -371,6 +362,7 @@ bowie_error_t bowie_engine_start(bowie_engine_t *e, bowie_tun_t *tun)
     e->tun   = tun;
     e->state = BOWIE_ENGINE_STARTED;
 
+    printf("[DEBUG] Engine started. DHT port: %u, Signal port: %u\n", e->dht_port, e->signal_port);
     ENGINE_LOG(BOWIE_LOG_DEBUG, "DHT listening on port: %u", e->dht_port);
     ENGINE_LOG(BOWIE_LOG_DEBUG, "Signal listening on port: %u", e->signal_port);
     ENGINE_LOG(BOWIE_LOG_INFO, "engine started (dht port %u, signal port %u)", e->dht_port, e->signal_port);
@@ -395,21 +387,16 @@ fail_dht_alloc:
     return rc;
 }
 
-bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
-                                         const char *ip,
-                                         uint16_t port)
+bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e, const char *ip, uint16_t port)
 {
-    if (e == NULL || ip == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-    
+    if (e == NULL || ip == NULL) return BOWIE_ERR_NULL_ARG;
+
     pthread_mutex_lock(&e->lock);
     if (e->state != BOWIE_ENGINE_STARTED) {
         pthread_mutex_unlock(&e->lock);
         return BOWIE_ERR_STATE;
     }
 
-    // 1. Parse IP string to bytes (simple IPv4 parser)
     unsigned int a, b2, c, d;
     if (sscanf(ip, "%u.%u.%u.%u", &a, &b2, &c, &d) != 4 ||
         a > 255 || b2 > 255 || c > 255 || d > 255) {
@@ -426,7 +413,6 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
     addr.addr[2] = (uint8_t)c;
     addr.addr[3] = (uint8_t)d;
 
-    // 2. (Optional) Add to DHT config for future restarts
     if (e->dht->config.bootstrap_count < BOWIE_DHT_BOOTSTRAP_MAX) {
         bowie_dht_bootstrap_t *b = &e->dht->config.bootstrap[e->dht->config.bootstrap_count];
         strncpy(b->host, ip, BOWIE_DHT_BOOTSTRAP_LEN_MAX - 1);
@@ -435,23 +421,22 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
         e->dht->config.bootstrap_count++;
     }
 
-    // 3. Construct and send a PING query to kickstart the DHT
     bowie_dht_message_t q;
-    uint8_t tid[2] = {0x01, 0x02}; // Simple transaction ID
-    bowie_error_t rc = bowie_dht_make_query(e->dht, BOWIE_DHT_QUERY_PING, 
-                                             NULL, NULL, tid, sizeof(tid), &q);
+    uint8_t tid[2] = {0x01, 0x02};
+    bowie_error_t rc = bowie_dht_make_query(e->dht, BOWIE_DHT_QUERY_PING, NULL, NULL, tid, sizeof(tid), &q);
     if (rc != BOWIE_OK) {
         pthread_mutex_unlock(&e->lock);
         return rc;
     }
 
     rc = bowie_dht_send_query(e->dht, &addr, &q);
-    
     pthread_mutex_unlock(&e->lock);
 
     if (rc == BOWIE_OK) {
+        printf("[DEBUG] PING sent to %s:%u\n", ip, port);
         ENGINE_LOG(BOWIE_LOG_DEBUG, "Sent PING to bootstrap node %s:%u", ip, port);
     } else {
+        printf("[DEBUG] Failed to send PING to %s:%u: %s\n", ip, port, bowie_err_strerror(rc));
         ENGINE_LOG(BOWIE_LOG_ERROR, "Failed to send PING to %s:%u: %s", ip, port, bowie_err_strerror(rc));
     }
     return rc;
@@ -513,8 +498,7 @@ bowie_error_t bowie_engine_stop(bowie_engine_t *e)
  * ============================================================================
  */
 
-bowie_error_t bowie_engine_search_peer(bowie_engine_t *e, const bowie_peer_id_t *peer_id,
-                                       bowie_dht_node_t *out_node, uint32_t timeout_ms)
+bowie_error_t bowie_engine_search_peer(bowie_engine_t *e, const bowie_peer_id_t *peer_id, bowie_dht_node_t *out_node, uint32_t timeout_ms)
 {
     bowie_dht_search_t search;
     bowie_dht_node_t   candidates[BOWIE_DHT_K * 8];
@@ -657,11 +641,9 @@ bowie_error_t bowie_engine_connect(bowie_engine_t *e, const bowie_peer_id_t *pee
     if (rc != BOWIE_OK) { pthread_mutex_unlock(&e->lock); return rc; }
     pthread_mutex_unlock(&e->lock);
 
-    /* Step 1: Search peer */
     rc = bowie_engine_search_peer(e, peer, &node, timeout_ms);
     if (rc != BOWIE_OK) goto fail_state;
 
-    /* Step 2: Setup signaling address and NAT */
     pthread_mutex_lock(&e->lock);
     memset(&e->peer_signal_addr, 0, sizeof(e->peer_signal_addr));
     e->peer_signal_addr.sin_family = AF_INET;
@@ -692,7 +674,6 @@ bowie_error_t bowie_engine_connect(bowie_engine_t *e, const bowie_peer_id_t *pee
     pthread_mutex_unlock(&e->lock);
     if (rc != BOWIE_OK) goto fail_nat;
 
-    /* Step 3 & 4: X25519 Exchange & Session Creation */
     {
         bowie_proto_stream_t stream;
         bowie_keypair_public_t  local_pub, remote_pub;
@@ -727,13 +708,11 @@ bowie_error_t bowie_engine_connect(bowie_engine_t *e, const bowie_peer_id_t *pee
         if (rc != BOWIE_OK) goto fail_nat_connected;
     }
 
-    /* Step 5: Grant (Simplified for first cut) */
     memset(&e->grant, 0, sizeof(e->grant));
     e->grant.subject = *peer;
     memcpy(e->grant.issuer.bytes, e->own_public_id.bytes, BOWIE_PUBLIC_ID_LEN);
     e->grant.permissions = BOWIE_CAP_SOURCE | BOWIE_CAP_GATEWAY;
 
-    /* Step 6: Gateway */
     if (e->tun != NULL) {
         bowie_gateway_config_t gw_cfg;
         bowie_gateway_default_config(&gw_cfg);
@@ -793,7 +772,6 @@ bowie_error_t bowie_engine_accept(bowie_engine_t *e, uint32_t timeout_ms)
     pthread_mutex_unlock(&e->lock);
     if (rc != BOWIE_OK) goto fail_state;
 
-    /* X25519 Exchange & Session Creation */
     {
         bowie_proto_stream_t stream;
         bowie_keypair_public_t  local_pub, remote_pub;
