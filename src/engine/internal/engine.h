@@ -233,7 +233,8 @@ struct bowie_engine {
     bowie_public_id_t    own_public_id;
     bowie_peer_id_t      own_peer_id;
     bowie_dht_node_id_t  own_dht_id;
-
+    /* Hooks */
+    bowie_hooks_t hooks;
     /*
      * ----------------------------------------------------------------
      * DHT
