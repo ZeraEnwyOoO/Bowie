@@ -65,6 +65,7 @@
 
 static bowie_log_t g_engine_log;
 static int         g_engine_log_ready = 0;
+static bowie_log_hook_fn g_engine_log_hook = NULL; // <--- Hook ថ្មី
 
 static void engine_log_init(bowie_log_level_t level)
 {
@@ -76,10 +77,17 @@ static void engine_log_init(bowie_log_level_t level)
     }
 }
 
+// កែ ENGINE_LOG ដើម្បីឱ្យវាហៅ Hook បើមាន
 #define ENGINE_LOG(level, ...) \
     do { \
-        engine_log_init(level); \
-        bowie_log_emit(&g_engine_log, (level), __VA_ARGS__); \
+        if (g_engine_log_hook) { \
+            char _buf[512]; \
+            snprintf(_buf, sizeof(_buf), __VA_ARGS__); \
+            g_engine_log_hook(level, _buf, NULL); \
+        } else { \
+            engine_log_init(level); \
+            bowie_log_emit(&g_engine_log, (level), __VA_ARGS__); \
+        } \
     } while (0)
 
 /*
@@ -224,34 +232,9 @@ void bowie_engine_default_config(bowie_engine_config_t *cfg)
     cfg->turn_user      = NULL;
     cfg->turn_pass      = NULL;
     cfg->tunnel_mtu     = 0;
-    cfg->log_level      = BOWIE_LOG_INFO; // Default log level
+    cfg->log_level      = BOWIE_LOG_INFO;
 }
-/*
- * ============================================================================
- * HOOKS
- * ============================================================================
- */
 
-bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e,
-                                     const bowie_hooks_t *hooks)
-{
-    if (e == NULL || hooks == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-    
-    pthread_mutex_lock(&e->lock);
-    if (e->state != BOWIE_ENGINE_STOPPED) {
-        pthread_mutex_unlock(&e->lock);
-        return BOWIE_ERR_STATE;
-    }
-
-    // Store the hooks in the engine (you'll need to add a field to struct bowie_engine)
-    // For now, let's just validate and return OK
-    e->hooks = *hooks; 
-    
-    pthread_mutex_unlock(&e->lock);
-    return BOWIE_OK;
-}
 /*
  * ============================================================================
  * LIFECYCLE — NEW
@@ -269,7 +252,6 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     e = (bowie_engine_t *)calloc(1, sizeof(*e));
     if (e == NULL) return BOWIE_ERR_NOMEM;
 
-    // Initialize mutex
     {
         pthread_mutexattr_t attr;
         if (pthread_mutexattr_init(&attr) != 0) { free(e); return BOWIE_ERR_INTERNAL; }
@@ -287,7 +269,6 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     if (cfg != NULL) e->cfg = *cfg;
     else bowie_engine_default_config(&e->cfg);
 
-    // Initialize logging with the configured level
     engine_log_init(e->cfg.log_level);
 
     rc = bowie_security_sign_generate(&e->own_sign_pub, &e->own_sign_priv);
@@ -309,6 +290,29 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     e->signal_port = 0;
 
     *out = e;
+    return BOWIE_OK;
+}
+
+/*
+ * ============================================================================
+ * LIFECYCLE — HOOKS
+ * ============================================================================
+ */
+
+bowie_error_t bowie_engine_set_hooks(bowie_engine_t *e, const bowie_hooks_t *hooks)
+{
+    if (e == NULL || hooks == NULL) return BOWIE_ERR_NULL_ARG;
+
+    pthread_mutex_lock(&e->lock);
+    if (e->state != BOWIE_ENGINE_STOPPED) {
+        pthread_mutex_unlock(&e->lock);
+        return BOWIE_ERR_STATE;
+    }
+
+    e->hooks = *hooks;
+    g_engine_log_hook = hooks->log; // <--- កំណត់ Hook នៅទីនេះ
+
+    pthread_mutex_unlock(&e->lock);
     return BOWIE_OK;
 }
 
