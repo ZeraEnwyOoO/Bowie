@@ -182,7 +182,7 @@ extern "C" {
  */
 
 /* Forward Declaration */
-struct bowie_engine_event_queue;
+struct bowie_engine_event_queue *events;
 struct bowie_engine {
     /*
      * ----------------------------------------------------------------
