@@ -47,8 +47,9 @@
  *     module does the work.
  *   - No quota. The engine holds the quota; the quota module
  *     does the work.
- *   - No UI. The engine has no command line, no menu, and no
- *     output. A caller that wants a UI builds it on top.
+ *   - No UI or CLI. The engine has no command line, no menu,
+ *     no logging output, and no output of any kind. A caller
+ *     that wants a UI builds it on top.
  *
  * ----------------------------------------------------------------------------
  * Design notes
@@ -109,7 +110,6 @@
 #include "bowie/config.h"
 #include "bowie/hooks.h"
 #include "dht/types.h"
-#include "dht/node.h"
 #include "security/sign.h"
 
 #ifdef __cplusplus
@@ -145,7 +145,7 @@ typedef struct bowie_engine_config {
 
     uint32_t    tunnel_mtu;
 
-    /* Log level for the engine. */
+    /* Log level for the engine's internal log hook. */
     bowie_log_level_t log_level;
 } bowie_engine_config_t;
 
