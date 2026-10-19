@@ -264,6 +264,49 @@ void bowie_session_free(bowie_session_t *session)
     free(session);
 }
 
+
+bowie_error_t bowie_session_new_from_key(
+    const uint8_t *key, size_t key_len,
+    const bowie_session_id_t *session_id,
+    bowie_session_t **out)
+{
+    bowie_session_t *s;
+
+    if (out == NULL || key == NULL || session_id == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+
+    *out = NULL;
+
+    if (key_len != BOWIE_SESSION_KEY_LEN) {
+        return BOWIE_ERR_INVAL;
+    }
+
+    if (bowie_session_id_is_zero(session_id)) {
+        return BOWIE_ERR_INVAL;
+    }
+
+    s = (bowie_session_t *)calloc(1, sizeof(*s));
+    if (s == NULL) {
+        return BOWIE_ERR_NOMEM;
+    }
+
+    /*
+     * Copy the pre-derived key. The session layer does not
+     * run a KDF on it; the caller has already done that.
+     * The key is copied into the session's fixed-size
+     * buffer; the caller's buffer is not retained.
+     */
+    memcpy(s->key, key, BOWIE_SESSION_KEY_LEN);
+    s->counter = 0;
+    memcpy(&s->id, session_id, sizeof(s->id));
+
+    *out = s;
+    return BOWIE_OK;
+}
+
+
+
 /*
  * ============================================================================
  * QUERY
