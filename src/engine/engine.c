@@ -286,7 +286,7 @@ bowie_error_t bowie_engine_new(const bowie_engine_config_t *cfg, bowie_engine_t 
     e->state = BOWIE_ENGINE_STOPPED;
     bowie_revoke_list_clear(&e->revoke_list);
     bowie_quota_init(&e->quota);
-    bowie_engine_event_queue_clear(&e->events);
+    bowie_engine_event_queue_clear(e->events);
 
     e->signal_fd   = -1;
     e->signal_port = 0;
