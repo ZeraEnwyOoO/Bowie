@@ -85,6 +85,7 @@
 
 #ifndef BOWIE_SECURITY_SESSION_H
 #define BOWIE_SECURITY_SESSION_H
+#define BOWIE_SESSION_KEY_LEN 32u
 
 #include <stdint.h>
 #include <stddef.h>
