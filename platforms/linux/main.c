@@ -95,6 +95,11 @@ int main(int argc, char **argv) {
     /* Initialize the engine with default configuration */
     bowie_engine_config_t cfg;
     bowie_engine_default_config(&cfg);
+
+    // Set log level to DEBUG to see detailed logs
+    // (You can change this to BOWIE_LOG_INFO for normal use)
+    cfg.log_level = BOWIE_LOG_DEBUG;
+
     cfg.dht_port = 0;  /* Let OS choose */
     cfg.nat_port = 0;
 
