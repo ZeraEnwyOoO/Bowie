@@ -412,7 +412,6 @@ bowie_error_t bowie_engine_add_bootstrap(bowie_engine_t *e,
     b->port = port;
     e->dht->config.bootstrap_count++;
 
-    printf("[Engine] Added bootstrap node %s:%u\n", ip, port);
     return BOWIE_OK;
 }
 /*
