@@ -192,6 +192,7 @@ LIB_SRCS := \
     src/security/sign.c \
     src/security/keypair.c \
     src/security/kdf.c \
+    src/security/quota.c \
     src/gateway/gateway.c \
     src/gateway/ip_forward.c \
     src/gateway/conntrack.c \
