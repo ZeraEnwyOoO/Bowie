@@ -20,13 +20,6 @@
  * ============================================================================
  * BOWIE — ENGINE INTERNAL STATE
  * ============================================================================
- *
- * The private layout of struct bowie_engine.
- *
- * This header is internal to the Bowie library. It is not part
- * of the public API and is not installed. Only the C files in
- * the src/engine directory include it.
- * ============================================================================
  */
 
 #ifndef BOWIE_ENGINE_INTERNAL_ENGINE_H
@@ -40,6 +33,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
+#include "bowie/hooks.h"      /* For bowie_event_record_t */
 #include "engine/engine.h"
 #include "dht/dht.h"
 #include "nat/nat.h"
@@ -49,9 +43,8 @@
 #include "security/session.h"
 #include "security/revoke.h"
 #include "security/quota.h"
-#include "security/grant.h"   /* Fix: For bowie_grant_t full definition */
+#include "security/grant.h"
 #include "net/peer.h"
-#include "engine/internal/event.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +67,20 @@ extern "C" {
 
 #define BOWIE_ENGINE_SEARCH_DEFAULT_TIMEOUT_MS 15000u
 #define BOWIE_ENGINE_CONNECT_DEFAULT_TIMEOUT_MS 30000u
+
+/*
+ * ============================================================================
+ * EVENT QUEUE STRUCT (Moved here to fix circular include)
+ * ============================================================================
+ */
+#define BOWIE_ENGINE_EVENT_QUEUE_CAP 64u
+
+typedef struct bowie_engine_event_queue {
+    bowie_event_record_t records[BOWIE_ENGINE_EVENT_QUEUE_CAP];
+    size_t               head;
+    size_t               tail;
+    size_t               count;
+} bowie_engine_event_queue_t;
 
 /*
  * ============================================================================
@@ -187,7 +194,6 @@ struct bowie_engine {
      * ----------------------------------------------------------------
      * Events
      * ----------------------------------------------------------------
-     * (Must be here so engine.c can access it)
      */
     bowie_engine_event_queue_t events;
 };
