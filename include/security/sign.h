@@ -110,7 +110,14 @@ bowie_error_t bowie_security_verify(
     const bowie_sign_public_t *public_key,
     const void *msg, size_t msg_len,
     const bowie_sign_signature_t *signature);
-
+/*
+ *=============================================================================
+ *bowie security sign generate
+ *=============================================================================
+ */
+bowie_error_t bowie_security_sign_generate(
+    bowie_sign_public_t *out_public,
+    bowie_sign_private_t *out_private);
 /*
  * ============================================================================
  * END OF SECURITY SIGN
