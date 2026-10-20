@@ -1,3 +1,4 @@
+<img width="908" height="573" alt="photo_6251510176087216901_y" src="https://github.com/user-attachments/assets/1894d0a6-4c2e-4867-8f03-2aa0f133e344" />
 # Bowie —  
 
 Version: 2.2.0 (draft, reconciled with SITUATION_REPORT 2026-10-09)
