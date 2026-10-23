@@ -79,15 +79,18 @@
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
+#include "core/internal/rand.h"
 #include "core/internal/time.h"
 #include "dht/dht.h"
 
@@ -100,6 +103,100 @@
 #define BOWIE_DHT_PACKET_MAX     1500
 #define BOWIE_DHT_POLL_TIMEOUT   100   /* ms */
 #define BOWIE_DHT_TICK_INTERVAL  1000  /* ms */
+
+static bowie_error_t send_get_peers(bowie_dht_t *dht,
+                                    const bowie_addr_t *peer,
+                                    const bowie_dht_info_hash_t *hash)
+{
+    uint8_t tid[BOWIE_DHT_MSG_TID_MAX];
+    bowie_dht_message_t query;
+    bowie_error_t rc = bowie_rand_secure_bytes(tid, sizeof(tid));
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_dht_make_query(dht, BOWIE_DHT_QUERY_GET_PEERS, NULL,
+                              hash, tid, sizeof(tid), &query);
+    if (rc != BOWIE_OK) return rc;
+    return bowie_dht_send_query(dht, peer, &query);
+}
+
+static void send_announce_get_peers(bowie_dht_t *dht,
+                                    const bowie_dht_info_hash_t *hash)
+{
+    for (size_t i = 0u; i < dht->config.bootstrap_count; i++) {
+        struct addrinfo hints;
+        struct addrinfo *result = NULL;
+        char service[6];
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        (void)snprintf(service, sizeof(service), "%u",
+                       (unsigned)dht->config.bootstrap[i].port);
+        if (getaddrinfo(dht->config.bootstrap[i].host, service,
+                        &hints, &result) != 0) continue;
+        struct sockaddr_in *sin = (struct sockaddr_in *)result->ai_addr;
+        bowie_addr_t peer;
+        memset(&peer, 0, sizeof(peer));
+        peer.family = BOWIE_AF_INET;
+        memcpy(peer.addr, &sin->sin_addr, 4u);
+        peer.port = ntohs(sin->sin_port);
+        (void)send_get_peers(dht, &peer, hash);
+        freeaddrinfo(result);
+    }
+}
+
+/* Called under state_lock for responses parsed by the DHT worker. */
+static void process_query_response(bowie_dht_t *dht,
+                                   const bowie_dht_message_t *response,
+                                   const bowie_addr_t *from,
+                                   bowie_mtime_t now_ms)
+{
+    bowie_dht_transaction_t transaction;
+    bowie_dht_info_hash_t announce_hash;
+    uint16_t announce_port;
+    int matched = 0;
+
+    memset(&transaction, 0, sizeof(transaction));
+    pthread_mutex_lock(&dht->transaction_lock);
+    for (size_t i = 0u; i < BOWIE_DHT_TRANSACTION_CAP; i++) {
+        bowie_dht_transaction_t *entry = &dht->transactions[i];
+        if (entry->used && entry->tid_len == response->tid_len &&
+            memcmp(entry->tid, response->tid, response->tid_len) == 0) {
+            transaction = *entry;
+            entry->used = 0;
+            matched = 1;
+            break;
+        }
+    }
+    announce_hash = dht->announce_hash;
+    announce_port = dht->announce_port;
+    pthread_mutex_unlock(&dht->transaction_lock);
+
+    if (!matched || transaction.query_type != BOWIE_DHT_QUERY_GET_PEERS) return;
+
+    for (size_t i = 0u; i < response->peers_count; i++) {
+        bowie_dht_peer_entry_t peer;
+        memset(&peer, 0, sizeof(peer));
+        peer.addr = response->peers[i].addr;
+        peer.last_seen_ms = now_ms;
+        peer.expires_at_ms = now_ms +
+            (bowie_mtime_t)dht->config.peer_lifetime_s * 1000u;
+        (void)bowie_dht_storage_add_peer(&dht->storage,
+                                          &transaction.info_hash, &peer);
+    }
+
+    /* Publish our signal endpoint to any DHT node that returns a token. */
+    if (announce_port != 0u && !bowie_dht_token_is_zero(&response->token)) {
+        uint8_t tid[BOWIE_DHT_MSG_TID_MAX];
+        bowie_dht_message_t announce;
+        if (bowie_rand_secure_bytes(tid, sizeof(tid)) == BOWIE_OK &&
+            bowie_dht_make_query(dht, BOWIE_DHT_QUERY_ANNOUNCE_PEER,
+                                 NULL, &announce_hash, tid, sizeof(tid),
+                                 &announce) == BOWIE_OK) {
+            announce.port = announce_port;
+            announce.token = response->token;
+            (void)bowie_dht_send_query(dht, from, &announce);
+        }
+    }
+}
 
 /*
  * ============================================================================
@@ -182,11 +279,17 @@ static void *dht_thread_main(void *arg)
                 continue;
             }
 
+            pthread_mutex_lock(&dht->state_lock);
             rc = bowie_dht_handle_message(dht, &msg, &from_addr,
                                            bowie_time_monotonic_ms(),
                                            &dht->msg_arena,
                                            &response,
                                            &has_response);
+            if (rc == BOWIE_OK && msg.type == BOWIE_DHT_MSG_RESPONSE) {
+                process_query_response(dht, &msg, &from_addr,
+                                       bowie_time_monotonic_ms());
+            }
+            pthread_mutex_unlock(&dht->state_lock);
 
             if (rc == BOWIE_OK && has_response) {
                 bowie_bencode_writer_t writer;
@@ -197,6 +300,14 @@ static void *dht_thread_main(void *arg)
                 rc = bowie_dht_message_serialize(&response, &writer);
 
                 if (rc == BOWIE_OK) {
+                    int address_family = from_addr.family == BOWIE_AF_INET6
+                        ? AF_INET6 : AF_INET;
+                    size_t address_length = address_family == AF_INET6 ? 16u : 4u;
+                    if (dht->config.prepare_underlay_address != NULL &&
+                        !dht->config.prepare_underlay_address(
+                            dht->config.underlay_context, address_family,
+                            from_addr.addr, address_length))
+                        continue;
                     sendto(dht->socket_fd, out, writer.pos, 0,
                            (struct sockaddr *)&from, from_len);
                 }
@@ -208,9 +319,25 @@ static void *dht_thread_main(void *arg)
             bowie_mtime_t now_ms = bowie_time_monotonic_ms();
 
             if (now_ms - last_tick_ms >= BOWIE_DHT_TICK_INTERVAL) {
+                pthread_mutex_lock(&dht->state_lock);
                 bowie_dht_tick(dht, now_ms, NULL, NULL);
+                pthread_mutex_unlock(&dht->state_lock);
                 last_tick_ms = now_ms;
             }
+
+            bowie_dht_info_hash_t announce_hash;
+            int refresh_announce = 0;
+            pthread_mutex_lock(&dht->transaction_lock);
+            bowie_mtime_t refresh_ms =
+                (bowie_mtime_t)dht->config.peer_lifetime_s * 500u;
+            if (dht->announce_port != 0u && refresh_ms != 0u &&
+                now_ms - dht->last_announce_ms >= refresh_ms) {
+                announce_hash = dht->announce_hash;
+                dht->last_announce_ms = now_ms;
+                refresh_announce = 1;
+            }
+            pthread_mutex_unlock(&dht->transaction_lock);
+            if (refresh_announce) send_announce_get_peers(dht, &announce_hash);
         }
     }
 
@@ -316,6 +443,17 @@ bowie_error_t bowie_dht_init(
         }
     }
 
+    if (pthread_mutex_init(&dht->state_lock, NULL) != 0) {
+        return BOWIE_ERR_INTERNAL;
+    }
+    dht->state_lock_ready = 1;
+    if (pthread_mutex_init(&dht->transaction_lock, NULL) != 0) {
+        pthread_mutex_destroy(&dht->state_lock);
+        dht->state_lock_ready = 0;
+        return BOWIE_ERR_INTERNAL;
+    }
+    dht->transaction_lock_ready = 1;
+
     dht->last_refresh_ms = now_ms;
     dht->initialized     = 1;
     dht->socket_fd       = -1;
@@ -383,6 +521,56 @@ bowie_error_t bowie_dht_start(bowie_dht_t *dht, uint16_t port)
 
     dht->running = 1;
 
+    /* Seed the routing table by pinging configured bootstrap nodes. */
+    for (size_t i = 0u; i < dht->config.bootstrap_count; i++) {
+        struct addrinfo hints;
+        struct addrinfo *result = NULL;
+        char service[6];
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        (void)snprintf(service, sizeof(service), "%u",
+                       (unsigned)dht->config.bootstrap[i].port);
+        if (getaddrinfo(dht->config.bootstrap[i].host, service,
+                        &hints, &result) == 0) {
+            struct sockaddr_in *sin = (struct sockaddr_in *)result->ai_addr;
+            bowie_addr_t peer;
+            uint8_t tid[BOWIE_DHT_MSG_TID_MAX];
+            bowie_dht_message_t ping;
+            memset(&peer, 0, sizeof(peer));
+            peer.family = BOWIE_AF_INET;
+            memcpy(peer.addr, &sin->sin_addr, 4u);
+            peer.port = ntohs(sin->sin_port);
+            if (bowie_rand_secure_bytes(tid, sizeof(tid)) == BOWIE_OK &&
+                bowie_dht_make_query(dht, BOWIE_DHT_QUERY_PING,
+                                     NULL, NULL, tid, sizeof(tid),
+                                     &ping) == BOWIE_OK) {
+                (void)bowie_dht_send_query(dht, &peer, &ping);
+            }
+            freeaddrinfo(result);
+        }
+    }
+
+    return BOWIE_OK;
+}
+
+bowie_error_t bowie_dht_set_announce(bowie_dht_t *dht,
+                                     const bowie_dht_info_hash_t *info_hash,
+                                     uint16_t signal_port)
+{
+    if (dht == NULL || info_hash == NULL) return BOWIE_ERR_NULL_ARG;
+    if (signal_port == 0u) return BOWIE_ERR_INVAL;
+    if (!dht->running) return BOWIE_ERR_NOT_STARTED;
+
+    pthread_mutex_lock(&dht->transaction_lock);
+    dht->announce_hash = *info_hash;
+    dht->announce_port = signal_port;
+    dht->last_announce_ms = bowie_time_monotonic_ms();
+    pthread_mutex_unlock(&dht->transaction_lock);
+
+    /* Ask each configured bootstrap node for a token; its response triggers
+     * a token-authenticated announce_peer from the DHT receive thread. */
+    send_announce_get_peers(dht, info_hash);
     return BOWIE_OK;
 }
 
@@ -420,6 +608,12 @@ void bowie_dht_shutdown(bowie_dht_t *dht)
         (void)bowie_dht_stop(dht);
     }
 
+    if (dht->state_lock_ready) {
+        pthread_mutex_destroy(&dht->state_lock);
+    }
+    if (dht->transaction_lock_ready) {
+        pthread_mutex_destroy(&dht->transaction_lock);
+    }
     memset(dht, 0, sizeof(*dht));
     dht->socket_fd = -1;
 }
@@ -652,6 +846,17 @@ bowie_error_t bowie_dht_handle_message(
                 bowie_dht_peer_entry_t peer;
                 memset(&peer, 0, sizeof(peer));
                 peer.addr          = *from;
+                if (msg->implied_port) {
+                    peer.addr.port = from->port;
+                } else if (msg->port != 0u) {
+                    peer.addr.port = msg->port;
+                } else {
+                    memset(out_response, 0, sizeof(*out_response));
+                    out_response->type = BOWIE_DHT_MSG_ERROR;
+                    out_response->error_code = 203;
+                    *out_has_response = 1;
+                    break;
+                }
                 peer.capabilities  = 0;
                 peer.last_seen_ms  = now_ms;
                 peer.expires_at_ms = now_ms +
@@ -689,6 +894,23 @@ bowie_error_t bowie_dht_handle_message(
                 bowie_dht_routing_set_token(&dht->routing,
                                              &msg->sender_id,
                                              &msg->token);
+            }
+
+            /* A find_node response is also a routing-table seed. */
+            for (size_t i = 0u; i < msg->nodes_count; i++) {
+                uint8_t compact[BOWIE_DHT_COMPACT_NODE_LEN];
+                size_t compact_len = 0u;
+                bowie_span_t encoded;
+                bowie_dht_node_t advertised;
+                if (bowie_dht_compact_nodes_encode(&msg->nodes[i], 1u,
+                        compact, sizeof(compact), &compact_len) != BOWIE_OK)
+                    continue;
+                encoded.data = compact;
+                encoded.len = compact_len;
+                if (bowie_dht_node_from_compact(encoded, &advertised) != BOWIE_OK)
+                    continue;
+                advertised.last_seen_ms = now_ms;
+                (void)bowie_dht_routing_add(&dht->routing, &advertised, now_ms);
             }
         }
         break;
@@ -831,6 +1053,10 @@ bowie_error_t bowie_dht_send_query(
     if (to->family != BOWIE_AF_INET) {
         return BOWIE_ERR_INVAL;
     }
+    if (dht->config.prepare_underlay_address != NULL &&
+        !dht->config.prepare_underlay_address(dht->config.underlay_context,
+                                               AF_INET, to->addr, 4u))
+        return BOWIE_ERR_NETWORK;
 
     bowie_bencode_writer_init(&writer, buf, sizeof(buf));
 
@@ -847,13 +1073,37 @@ bowie_error_t bowie_dht_send_query(
     memcpy(&sin.sin_addr, to->addr, 4);
     sin.sin_port = htons(to->port);
 
+    size_t transaction_slot = BOWIE_DHT_TRANSACTION_CAP;
+    if (msg->query_type == BOWIE_DHT_QUERY_GET_PEERS && msg->tid_len > 0u) {
+        pthread_mutex_lock(&dht->transaction_lock);
+        transaction_slot = dht->transaction_next++ % BOWIE_DHT_TRANSACTION_CAP;
+        bowie_dht_transaction_t *entry = &dht->transactions[transaction_slot];
+        memset(entry, 0, sizeof(*entry));
+        memcpy(entry->tid, msg->tid, msg->tid_len);
+        entry->tid_len = msg->tid_len;
+        entry->query_type = msg->query_type;
+        entry->info_hash = msg->info_hash;
+        entry->used = 1;
+        pthread_mutex_unlock(&dht->transaction_lock);
+    }
+
     sent = sendto(dht->socket_fd, buf, writer.pos, 0,
                   (struct sockaddr *)&sin, sizeof(sin));
 
     if (sent < 0) {
+        if (transaction_slot < BOWIE_DHT_TRANSACTION_CAP) {
+            pthread_mutex_lock(&dht->transaction_lock);
+            dht->transactions[transaction_slot].used = 0;
+            pthread_mutex_unlock(&dht->transaction_lock);
+        }
         return BOWIE_ERR_NETWORK;
     }
     if ((size_t)sent != writer.pos) {
+        if (transaction_slot < BOWIE_DHT_TRANSACTION_CAP) {
+            pthread_mutex_lock(&dht->transaction_lock);
+            dht->transactions[transaction_slot].used = 0;
+            pthread_mutex_unlock(&dht->transaction_lock);
+        }
         return BOWIE_ERR_NETWORK;
     }
 

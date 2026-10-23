@@ -161,6 +161,11 @@ bowie_error_t bowie_nat_new(const bowie_nat_config_t *cfg,
         return BOWIE_ERR_NOMEM;
     }
 
+    if (pthread_mutex_init(&nat->callback_lock, NULL) != 0) {
+        free(nat);
+        return BOWIE_ERR_INTERNAL;
+    }
+
     nat->cfg     = *cfg;
     nat->state   = BOWIE_NAT_STATE_DISCONNECTED;
     nat->ops     = &bowie_nat_libjuice_ops;
@@ -175,6 +180,7 @@ bowie_error_t bowie_nat_new(const bowie_nat_config_t *cfg,
     nat->state_ctx   = NULL;
 
     if (nat->ops == NULL || nat->ops->create == NULL) {
+        pthread_mutex_destroy(&nat->callback_lock);
         free(nat);
         return BOWIE_ERR_NOT_IMPLEMENTED;
     }
@@ -182,6 +188,7 @@ bowie_error_t bowie_nat_new(const bowie_nat_config_t *cfg,
     rc = nat->ops->create(nat, &nat->cfg);
 
     if (rc != BOWIE_OK) {
+        pthread_mutex_destroy(&nat->callback_lock);
         free(nat);
         return rc;
     }
@@ -266,6 +273,7 @@ void bowie_nat_free(bowie_nat_t *nat)
      * are not freed here.
      */
 
+    pthread_mutex_destroy(&nat->callback_lock);
     free(nat);
 }
 
@@ -406,8 +414,10 @@ bowie_error_t bowie_nat_set_recv(bowie_nat_t      *nat,
         return BOWIE_ERR_NULL_ARG;
     }
 
+    pthread_mutex_lock(&nat->callback_lock);
     nat->recv     = recv;
     nat->recv_ctx = ctx;
+    pthread_mutex_unlock(&nat->callback_lock);
 
     return BOWIE_OK;
 }
@@ -426,8 +436,10 @@ bowie_error_t bowie_nat_set_signal(bowie_nat_t             *nat,
         return BOWIE_ERR_NULL_ARG;
     }
 
+    pthread_mutex_lock(&nat->callback_lock);
     nat->signal_send = send;
     nat->signal_ctx  = ctx;
+    pthread_mutex_unlock(&nat->callback_lock);
 
     return BOWIE_OK;
 }
@@ -478,8 +490,10 @@ bowie_error_t bowie_nat_set_state_cb(bowie_nat_t       *nat,
         return BOWIE_ERR_NULL_ARG;
     }
 
+    pthread_mutex_lock(&nat->callback_lock);
     nat->state_cb  = state_cb;
     nat->state_ctx = ctx;
+    pthread_mutex_unlock(&nat->callback_lock);
 
     return BOWIE_OK;
 }
@@ -504,6 +518,18 @@ bowie_error_t bowie_nat_capabilities(const bowie_nat_t *nat,
     }
 
     return nat->ops->capabilities(nat, out);
+}
+
+bowie_error_t bowie_nat_add_turn_server(bowie_nat_t *nat, const char *host,
+                                        uint16_t port, const char *username,
+                                        const char *password)
+{
+    if (nat == NULL || host == NULL || username == NULL || password == NULL)
+        return BOWIE_ERR_NULL_ARG;
+    if (host[0] == '\0' || port == 0u) return BOWIE_ERR_INVAL;
+    if (nat->ops == NULL || nat->ops->add_turn_server == NULL)
+        return BOWIE_ERR_NOT_IMPLEMENTED;
+    return nat->ops->add_turn_server(nat, host, port, username, password);
 }
 
 /*
@@ -554,9 +580,9 @@ void bowie_nat_internal_set_state(bowie_nat_t      *nat,
 
     nat->state = state;
 
-    if (nat->state_cb != NULL) {
-        nat->state_cb(nat->state_ctx, state);
-    }
+    pthread_mutex_lock(&nat->callback_lock);
+    if (nat->state_cb != NULL) nat->state_cb(nat->state_ctx, state);
+    pthread_mutex_unlock(&nat->callback_lock);
 }
 
 void bowie_nat_internal_deliver(bowie_nat_t   *nat,
@@ -567,9 +593,9 @@ void bowie_nat_internal_deliver(bowie_nat_t   *nat,
         return;
     }
 
-    if (nat->recv != NULL) {
-        nat->recv(nat->recv_ctx, data, len);
-    }
+    pthread_mutex_lock(&nat->callback_lock);
+    if (nat->recv != NULL) nat->recv(nat->recv_ctx, data, len);
+    pthread_mutex_unlock(&nat->callback_lock);
 }
 
 bowie_error_t bowie_nat_internal_signal(bowie_nat_t           *nat,
@@ -581,11 +607,14 @@ bowie_error_t bowie_nat_internal_signal(bowie_nat_t           *nat,
         return BOWIE_ERR_NULL_ARG;
     }
 
+    pthread_mutex_lock(&nat->callback_lock);
     if (nat->signal_send == NULL) {
+        pthread_mutex_unlock(&nat->callback_lock);
         return BOWIE_ERR_NOT_INITIALIZED;
     }
-
-    return nat->signal_send(nat->signal_ctx, peer, data, len);
+    bowie_error_t rc = nat->signal_send(nat->signal_ctx, peer, data, len);
+    pthread_mutex_unlock(&nat->callback_lock);
+    return rc;
 }
 
 /*

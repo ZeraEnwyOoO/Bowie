@@ -79,7 +79,7 @@ static int generate_ed25519_keypair(bowie_sign_public_t *pub,
     EVP_PKEY_CTX *ctx;
     EVP_PKEY     *pkey;
     size_t        pub_len = BOWIE_SIGN_PUBLIC_LEN;
-    size_t        priv_len = BOWIE_SIGN_PRIVATE_LEN;
+    size_t        priv_len = BOWIE_SIGN_SEED_LEN;
 
     ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
     if (ctx == NULL) return 0;
@@ -106,10 +106,13 @@ static int generate_ed25519_keypair(bowie_sign_public_t *pub,
         return 0;
     }
 
+    memcpy(priv->bytes + BOWIE_SIGN_SEED_LEN, pub->bytes,
+           BOWIE_SIGN_PUBLIC_LEN);
+
     EVP_PKEY_free(pkey);
 
     return (pub_len == BOWIE_SIGN_PUBLIC_LEN &&
-            priv_len == BOWIE_SIGN_PRIVATE_LEN) ? 1 : 0;
+            priv_len == BOWIE_SIGN_SEED_LEN) ? 1 : 0;
 }
 
 static void public_id_from_sign(const bowie_sign_public_t *pub,
@@ -131,7 +134,8 @@ static void peer_id_from_public(const bowie_public_id_t *pub,
 static void make_grant(bowie_grant_t *g,
                        const bowie_public_id_t *issuer,
                        const bowie_peer_id_t *subject,
-                       uint32_t capability)
+                       uint32_t capability,
+                       const bowie_sign_private_t *issuer_private)
 {
     bowie_grant_clear(g);
 
@@ -146,6 +150,7 @@ static void make_grant(bowie_grant_t *g,
     g->permissions = capability;
     g->issued_at   = 1000;
     g->expires_at  = 2000;
+    ck_assert_int_eq(bowie_grant_sign(g, issuer_private), BOWIE_OK);
 }
 
 /*
@@ -211,7 +216,7 @@ START_TEST(test_permission_owner_mismatch)
     public_id_from_sign(&pub2, &other);
     peer_id_from_public(&owner, &subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv1);
     bowie_revoke_list_clear(&revoke);
 
     c.data = challenge;
@@ -253,7 +258,7 @@ START_TEST(test_permission_expired)
     public_id_from_sign(&pub, &owner);
     peer_id_from_public(&owner, &subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv);
 
     rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
@@ -299,7 +304,7 @@ START_TEST(test_permission_revoked)
     public_id_from_sign(&pub, &owner);
     peer_id_from_public(&owner, &subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv);
 
     rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
@@ -346,7 +351,7 @@ START_TEST(test_permission_capability)
     public_id_from_sign(&pub, &owner);
     peer_id_from_public(&owner, &subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv);
 
     rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
@@ -399,7 +404,7 @@ START_TEST(test_permission_subject_mismatch)
     peer_id_from_public(&owner, &subject);
     peer_id_from_public(&other_public, &wrong_subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv);
 
     rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
@@ -439,7 +444,7 @@ START_TEST(test_permission_valid)
     public_id_from_sign(&pub, &owner);
     peer_id_from_public(&owner, &subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv);
 
     rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
@@ -485,7 +490,7 @@ START_TEST(test_permission_check_and_bind_null_session)
     public_id_from_sign(&pub, &owner);
     peer_id_from_public(&owner, &subject);
 
-    make_grant(&grant, &owner, &subject, 0x01);
+    make_grant(&grant, &owner, &subject, 0x01, &priv);
 
     rc = bowie_security_sign(&priv, challenge, sizeof(challenge), &sig);
     ck_assert_int_eq(rc, BOWIE_OK);
@@ -584,7 +589,6 @@ int main(void)
 
     s  = permission_suite();
     sr = srunner_create(s);
-
     srunner_run_all(sr, CK_NORMAL);
 
     failed = srunner_ntests_failed(sr);

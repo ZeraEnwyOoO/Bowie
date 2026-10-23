@@ -154,7 +154,8 @@ extern "C" {
  * copied, stored, and serialized without allocation.
  *
  * The signature field holds an Ed25519 signature over the
- * canonical encoding of the other fields. The exact canonical
+ * canonical encoding of the other fields, including the data
+ * limit. The exact canonical
  * encoding is a protocol concern and is not defined here.
  *
  * A grant with an all-zero subject or issuer is unset.
@@ -172,6 +173,7 @@ typedef struct bowie_grant {
     uint32_t          permissions;  /* bitmask; meaning is layer-defined */
     bowie_wtime_t     issued_at;    /* wall-clock time, ms since epoch */
     bowie_wtime_t     expires_at;   /* wall-clock time, ms since epoch */
+    uint64_t          max_egress_bytes; /* zero means unlimited */
     uint8_t           signature[64];/* Ed25519 signature */
 } bowie_grant_t;
 

@@ -204,7 +204,7 @@ START_TEST(test_session_roundtrip)
     rc = bowie_session_encrypt(s, plain, sizeof(plain),
                                 cipher, sizeof(cipher), &cipher_len);
     ck_assert_int_eq(rc, BOWIE_OK);
-    ck_assert_uint_eq(cipher_len, sizeof(plain) + 16);
+    ck_assert_uint_eq(cipher_len, sizeof(plain) + BOWIE_SESSION_OVERHEAD_LEN);
 
     rc = bowie_session_decrypt(s, cipher, cipher_len,
                                 out, sizeof(out), &out_len);
@@ -246,13 +246,42 @@ START_TEST(test_session_tamper)
     ck_assert_int_eq(rc, BOWIE_OK);
 
     /* Flip a bit in the ciphertext. The tag must fail. */
-    cipher[0] ^= 0x01;
+    cipher[BOWIE_SESSION_COUNTER_LEN] ^= 0x01;
 
     rc = bowie_session_decrypt(s, cipher, cipher_len,
                                 out, sizeof(out), &out_len);
     ck_assert_int_eq(rc, BOWIE_ERR_CRYPTO);
 
     bowie_session_free(s);
+}
+END_TEST
+
+START_TEST(test_session_reordering_and_replay)
+{
+    uint8_t secret[32], plain1[12], plain2[12];
+    uint8_t cipher1[64], cipher2[64], out[64];
+    bowie_session_id_t id;
+    bowie_session_t *sender = NULL, *receiver = NULL;
+    size_t c1_len = 0u, c2_len = 0u, out_len = 0u;
+
+    make_secret(secret, sizeof(secret), 0x31);
+    make_plaintext(plain1, sizeof(plain1));
+    make_plaintext(plain2, sizeof(plain2));
+    plain2[0] ^= 0x7fu;
+    memset(&id, 0x52, sizeof(id));
+    ck_assert_int_eq(bowie_session_new(secret, sizeof(secret), &id, &sender), BOWIE_OK);
+    ck_assert_int_eq(bowie_session_new(secret, sizeof(secret), &id, &receiver), BOWIE_OK);
+    ck_assert_int_eq(bowie_session_encrypt(sender, plain1, sizeof(plain1), cipher1, sizeof(cipher1), &c1_len), BOWIE_OK);
+    ck_assert_int_eq(bowie_session_encrypt(sender, plain2, sizeof(plain2), cipher2, sizeof(cipher2), &c2_len), BOWIE_OK);
+
+    ck_assert_int_eq(bowie_session_decrypt(receiver, cipher2, c2_len, out, sizeof(out), &out_len), BOWIE_OK);
+    ck_assert_mem_eq(out, plain2, sizeof(plain2));
+    ck_assert_int_eq(bowie_session_decrypt(receiver, cipher1, c1_len, out, sizeof(out), &out_len), BOWIE_OK);
+    ck_assert_mem_eq(out, plain1, sizeof(plain1));
+    ck_assert_int_eq(bowie_session_decrypt(receiver, cipher1, c1_len, out, sizeof(out), &out_len), BOWIE_ERR_PERMISSION);
+
+    bowie_session_free(sender);
+    bowie_session_free(receiver);
 }
 END_TEST
 
@@ -357,6 +386,7 @@ static Suite *session_suite(void)
     TCase *tc_tamper;
     TCase *tc_wrong_key;
     TCase *tc_unique;
+    TCase *tc_replay;
 
     s = suite_create("SecuritySession");
 
@@ -382,6 +412,10 @@ static Suite *session_suite(void)
     tc_unique = tcase_create("Unique");
     tcase_add_test(tc_unique, test_session_unique);
     suite_add_tcase(s, tc_unique);
+
+    tc_replay = tcase_create("ReplayWindow");
+    tcase_add_test(tc_replay, test_session_reordering_and_replay);
+    suite_add_tcase(s, tc_replay);
 
     return s;
 }

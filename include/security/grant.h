@@ -97,6 +97,7 @@
 
 #include "bowie/types.h"
 #include "bowie/err.h"
+#include "security/sign.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -123,8 +124,16 @@ struct bowie_grant {
     uint32_t          permissions; /* bitmask of allowed actions */
     bowie_wtime_t     issued_at;   /* wall-clock, milliseconds */
     bowie_wtime_t     expires_at;  /* wall-clock, milliseconds */
+    uint64_t          max_egress_bytes; /* zero means unlimited */
     uint8_t           signature[64]; /* Ed25519 signature */
 };
+
+#define BOWIE_GRANT_WIRE_LEN (BOWIE_PEER_ID_LEN + BOWIE_PUBLIC_ID_LEN + \
+                              BOWIE_GRANT_ID_LEN + 4u + 8u + 8u + 8u + 64u)
+
+/* Permissions carried by owner-issued internet access grants. */
+#define BOWIE_GRANT_INTERNET_USE   (1u << 0)
+#define BOWIE_GRANT_INTERNET_RELAY (1u << 1)
 
 /*
  * ============================================================================
@@ -159,7 +168,7 @@ void bowie_grant_clear(bowie_grant_t *grant);
  *
  * The serialization covers the fields in the order they appear
  * in the struct: subject, issuer, grant_id, permissions,
- * issued_at, expires_at.
+ * issued_at, expires_at, max_egress_bytes.
  *
  * Returns the number of bytes written.
  * Returns BOWIE_ERR_NULL_ARG if grant or buf is NULL.
@@ -169,6 +178,15 @@ void bowie_grant_clear(bowie_grant_t *grant);
 long bowie_grant_serialize(const bowie_grant_t *grant,
                            uint8_t *buf,
                            size_t cap);
+
+/* Decode the canonical fields followed by the 64-byte Ed25519 signature. */
+bowie_error_t bowie_grant_deserialize(const uint8_t *wire, size_t wire_len,
+                                      bowie_grant_t *out);
+
+/* Sign or verify the canonical grant fields with the issuer's key. */
+bowie_error_t bowie_grant_sign(bowie_grant_t *grant,
+                               const bowie_sign_private_t *private_key);
+bowie_error_t bowie_grant_verify(const bowie_grant_t *grant);
 
 /*
  * Return the exact size of the serialized grant fields, in

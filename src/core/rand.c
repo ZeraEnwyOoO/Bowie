@@ -103,6 +103,7 @@
 
 #include "bowie/err.h"
 #include "core/internal/rand.h"
+#include "platform/platform.h"
 
 /*
  * ============================================================================
@@ -122,55 +123,11 @@
  * or refused the request.
  */
 
-#if defined(__linux__)
-#include <sys/random.h>
-
 static int platform_entropy(void *buf, size_t n)
 {
-    /*
-     * getrandom can be interrupted by a signal. A short read
-     * is retried with the remaining buffer. A permanent
-     * failure is reported.
-     *
-     * A return value of 0 is treated as a failure: getrandom
-     * does not return 0 for a non-zero request.
-     */
-    uint8_t *p = (uint8_t *)buf;
-    size_t remaining = n;
-
-    while (remaining > 0u) {
-        ssize_t got = getrandom(p, remaining, 0);
-        if (got < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return -1;
-        }
-        if (got == 0) {
-            return -1;
-        }
-        p += (size_t)got;
-        remaining -= (size_t)got;
-    }
-    return 0;
+    long got = bowie_platform_entropy(buf, n);
+    return got == (long)n ? 0 : -1;
 }
-
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
-#include <stdlib.h>
-
-static int platform_entropy(void *buf, size_t n)
-{
-    /*
-     * arc4random_buf is available on macOS and the BSDs. It
-     * is a CSPRNG seeded from the platform entropy source.
-     */
-    arc4random_buf(buf, n);
-    return 0;
-}
-
-#else
-#error "No platform entropy source for this platform."
-#endif
 
 /*
  * ============================================================================

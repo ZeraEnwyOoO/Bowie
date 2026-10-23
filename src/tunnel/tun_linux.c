@@ -85,10 +85,10 @@
  */
 
 #include <errno.h>
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <linux/if_tun.h>
 #include <net/if.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -97,18 +97,8 @@
 #include "bowie/types.h"
 #include "bowie/err.h"
 #include "tunnel/tun_linux.h"
+#include "tunnel/tun_internal.h"
 #include "tunnel/mtu.h"
-
-/*
- * ============================================================================
- * HANDLE
- * ============================================================================
- */
-
-struct bowie_tun {
-    int  fd;
-    char name[IFNAMSIZ];
-};
 
 /*
  * ============================================================================
@@ -157,7 +147,6 @@ bowie_error_t bowie_tun_open(bowie_tun_t **out,
                              const char *name,
                              size_t mtu)
 {
-    bowie_tun_t     *tun;
     struct ifreq     ifr;
     size_t           effective_mtu;
     int              fd;
@@ -176,19 +165,9 @@ bowie_error_t bowie_tun_open(bowie_tun_t **out,
         return BOWIE_ERR_INVAL;
     }
 
-    tun = (bowie_tun_t *)calloc(1, sizeof(*tun));
-
-    if (tun == NULL) {
-        return BOWIE_ERR_NOMEM;
-    }
-
-    tun->fd = -1;
-
     fd = open("/dev/net/tun", O_RDWR);
 
     if (fd < 0) {
-        free(tun);
-
         if (errno == EACCES || errno == EPERM) {
             return BOWIE_ERR_PERMISSION;
         }
@@ -206,112 +185,71 @@ bowie_error_t bowie_tun_open(bowie_tun_t **out,
 
     if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
         close(fd);
-        free(tun);
         return BOWIE_ERR_SOCKET;
     }
 
-    tun->fd = fd;
-
-    strncpy(tun->name, ifr.ifr_name, IFNAMSIZ - 1);
-    tun->name[IFNAMSIZ - 1] = '\0';
-
-    {
-        bowie_error_t rc = set_mtu(tun->name, effective_mtu);
-
-        if (rc != BOWIE_OK) {
-            close(tun->fd);
-            free(tun);
-            return rc;
-        }
+    bowie_error_t rc = bowie_tun_wrap_fd(out, fd, 1);
+    if (rc != BOWIE_OK) {
+        close(fd);
+        return rc;
     }
+    bowie_tun_t *tun = *out;
+    bowie_tun_set_name(tun, ifr.ifr_name);
 
-    *out = tun;
-
+    rc = set_mtu(tun->name, effective_mtu);
+    if (rc != BOWIE_OK) {
+        bowie_tun_close(tun);
+        *out = NULL;
+        return rc;
+    }
     return BOWIE_OK;
 }
 
-void bowie_tun_close(bowie_tun_t *tun)
+bowie_error_t bowie_tun_configure_ipv4(bowie_tun_t *tun,
+                                       const char *address,
+                                       uint8_t prefix_len)
 {
-    if (tun == NULL) {
-        return;
-    }
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    struct in_addr addr;
+    struct in_addr mask;
+    int sock;
 
-    if (tun->fd >= 0) {
-        close(tun->fd);
-        tun->fd = -1;
-    }
-
-    free(tun);
-}
-
-int bowie_tun_fd(const bowie_tun_t *tun)
-{
-    if (tun == NULL) {
-        return -1;
-    }
-
-    return tun->fd;
-}
-
-/*
- * ============================================================================
- * I/O
- * ============================================================================
- */
-
-long bowie_tun_read(bowie_tun_t *tun, void *buf, size_t cap)
-{
-    ssize_t n;
-
-    if (tun == NULL || buf == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-
-    if (cap == 0) {
-        return BOWIE_ERR_TOO_SMALL;
-    }
-
-    /*
-     * read() returns exactly one packet. If cap is smaller
-     * than the packet, the kernel truncates the packet. The
-     * caller is responsible for sizing the buffer.
-     */
-    n = read(tun->fd, buf, cap);
-
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return BOWIE_ERR_AGAIN;
-        }
-
-        return BOWIE_ERR_NETWORK;
-    }
-
-    return (long)n;
-}
-
-long bowie_tun_write(bowie_tun_t *tun, const void *buf, size_t len)
-{
-    ssize_t n;
-
-    if (tun == NULL || buf == NULL) {
-        return BOWIE_ERR_NULL_ARG;
-    }
-
-    if (len == 0) {
+    if (tun == NULL || address == NULL) return BOWIE_ERR_NULL_ARG;
+    if (prefix_len > 32u || inet_pton(AF_INET, address, &addr) != 1)
         return BOWIE_ERR_INVAL;
-    }
 
-    n = write(tun->fd, buf, len);
+    uint32_t mask_host = prefix_len == 0u ? 0u : (UINT32_MAX << (32u - prefix_len));
+    mask.s_addr = htonl(mask_host);
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return BOWIE_ERR_SOCKET;
 
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return BOWIE_ERR_AGAIN;
-        }
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, tun->name, IFNAMSIZ - 1u);
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    sin->sin_family = AF_INET;
+    sin->sin_addr = addr;
+    if (ioctl(sock, SIOCSIFADDR, &ifr) < 0) goto fail;
 
-        return BOWIE_ERR_NETWORK;
-    }
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, tun->name, IFNAMSIZ - 1u);
+    sin = (struct sockaddr_in *)&ifr.ifr_netmask;
+    sin->sin_family = AF_INET;
+    sin->sin_addr = mask;
+    if (ioctl(sock, SIOCSIFNETMASK, &ifr) < 0) goto fail;
 
-    return (long)n;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, tun->name, IFNAMSIZ - 1u);
+    if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0) goto fail;
+    ifr.ifr_flags = (short)(ifr.ifr_flags | IFF_UP | IFF_RUNNING);
+    if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0) goto fail;
+
+    close(sock);
+    return BOWIE_OK;
+
+fail:
+    close(sock);
+    return (errno == EPERM || errno == EACCES) ? BOWIE_ERR_PERMISSION : BOWIE_ERR_NETWORK;
 }
 
 /*

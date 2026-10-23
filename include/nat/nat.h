@@ -211,6 +211,8 @@ typedef enum bowie_nat_state {
  */
 
 typedef struct bowie_nat_config {
+    /* Optional local IPv4 address used for ICE sockets. */
+    const char *bind_address;
     const char *stun_server_host;
     uint16_t    stun_server_port;
 
@@ -575,6 +577,11 @@ bowie_error_t bowie_nat_set_state_cb(bowie_nat_t       *nat,
  */
 bowie_error_t bowie_nat_capabilities(const bowie_nat_t *nat,
                                      bowie_nat_caps_t  *out);
+
+/* Add a TURN server discovered from signaling metadata to the live ICE agent. */
+bowie_error_t bowie_nat_add_turn_server(bowie_nat_t *nat, const char *host,
+                                        uint16_t port, const char *username,
+                                        const char *password);
 
 /*
  * ============================================================================

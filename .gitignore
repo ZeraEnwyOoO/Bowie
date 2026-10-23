@@ -1,1 +1,17 @@
 
+platforms/android/build/
+platforms/android/.gradle/
+platforms/android/.kotlin/
+platforms/android/app/.cxx/
+platforms/android/app/build/
+platforms/android/local.properties
+.local-signing/
+*.apk
+*.aab
+*.grant
+commandlinetools*.zip
+*.o
+build/
+out/
+*.env
+turn.env

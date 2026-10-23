@@ -44,13 +44,16 @@
  * shared secret is the IKM, the salt is empty, and the info
  * string is "bowie session key". The output is 32 bytes.
  *
- * The nonce is 12 bytes:
+ * Every datagram begins with its 64-bit big-endian sequence
+ * number, followed by ciphertext and a 16-byte GCM tag. The
+ * sequence number is authenticated as associated data. It
+ * selects the 12-byte nonce:
  *
  *     [ 4 bytes: zero ] [ 8 bytes: counter, big-endian ]
  *
- * The counter starts at zero and is incremented after every
- * call. Both peers must call encrypt/decrypt the same number
- * of times in the same order.
+ * The receiver tracks a 64-packet replay window, so packet
+ * loss and reordering do not desynchronize the session and
+ * duplicate or stale packets are rejected.
  *
  * The handle stores the key in a fixed-size buffer. The buffer
  * is wiped before the handle is freed with an explicit
@@ -103,7 +106,6 @@
  */
  
 #define BOWIE_SESSION_NONCE_LEN     12
-#define BOWIE_SESSION_TAG_LEN       16
 
 #define BOWIE_SESSION_INFO          "bowie session key"
 #define BOWIE_SESSION_INFO_LEN      17u
@@ -115,8 +117,12 @@
  */
 
 struct bowie_session {
-    uint8_t            key[BOWIE_SESSION_KEY_LEN];
-    uint64_t           counter;
+    uint8_t            tx_key[BOWIE_SESSION_KEY_LEN];
+    uint8_t            rx_key[BOWIE_SESSION_KEY_LEN];
+    uint64_t           tx_counter;
+    uint64_t           rx_highest;
+    uint64_t           rx_window;
+    int                rx_initialized;
     bowie_session_id_t id;
 };
 
@@ -202,6 +208,42 @@ static void make_nonce(uint64_t counter, uint8_t out[BOWIE_SESSION_NONCE_LEN])
     out[11] = (uint8_t)(counter);
 }
 
+static void encode_counter(uint64_t counter, uint8_t out[BOWIE_SESSION_COUNTER_LEN])
+{
+    for (size_t i = 0u; i < BOWIE_SESSION_COUNTER_LEN; i++)
+        out[i] = (uint8_t)(counter >> (56u - (unsigned)(i * 8u)));
+}
+
+static uint64_t decode_counter(const uint8_t in[BOWIE_SESSION_COUNTER_LEN])
+{
+    uint64_t counter = 0u;
+    for (size_t i = 0u; i < BOWIE_SESSION_COUNTER_LEN; i++)
+        counter = (counter << 8) | in[i];
+    return counter;
+}
+
+static int replay_candidate(const bowie_session_t *session, uint64_t counter)
+{
+    if (!session->rx_initialized || counter > session->rx_highest) return 1;
+    uint64_t distance = session->rx_highest - counter;
+    return distance < 64u && (session->rx_window & (UINT64_C(1) << distance)) == 0u;
+}
+
+static void replay_commit(bowie_session_t *session, uint64_t counter)
+{
+    if (!session->rx_initialized) {
+        session->rx_highest = counter;
+        session->rx_window = 1u;
+        session->rx_initialized = 1;
+    } else if (counter > session->rx_highest) {
+        uint64_t shift = counter - session->rx_highest;
+        session->rx_window = shift >= 64u ? 1u : (session->rx_window << shift) | 1u;
+        session->rx_highest = counter;
+    } else {
+        session->rx_window |= UINT64_C(1) << (session->rx_highest - counter);
+    }
+}
+
 /*
  * ============================================================================
  * LIFECYCLE
@@ -237,7 +279,7 @@ bowie_error_t bowie_session_new(const uint8_t *shared_secret,
         return BOWIE_ERR_NOMEM;
     }
 
-    rc = derive_key(shared_secret, shared_secret_len, s->key);
+    rc = derive_key(shared_secret, shared_secret_len, s->tx_key);
 
     if (rc != BOWIE_OK) {
         OPENSSL_cleanse(s, sizeof(*s));
@@ -245,7 +287,8 @@ bowie_error_t bowie_session_new(const uint8_t *shared_secret,
         return rc;
     }
 
-    s->counter = 0;
+    memcpy(s->rx_key, s->tx_key, sizeof(s->rx_key));
+    s->tx_counter = 0;
     memcpy(&s->id, session_id, sizeof(s->id));
 
     *out = s;
@@ -296,10 +339,30 @@ bowie_error_t bowie_session_new_from_key(
      * The key is copied into the session's fixed-size
      * buffer; the caller's buffer is not retained.
      */
-    memcpy(s->key, key, BOWIE_SESSION_KEY_LEN);
-    s->counter = 0;
+    memcpy(s->tx_key, key, BOWIE_SESSION_KEY_LEN);
+    memcpy(s->rx_key, key, BOWIE_SESSION_KEY_LEN);
+    s->tx_counter = 0;
     memcpy(&s->id, session_id, sizeof(s->id));
 
+    *out = s;
+    return BOWIE_OK;
+}
+
+bowie_error_t bowie_session_new_from_keys(
+    const uint8_t *tx_key, const uint8_t *rx_key,
+    const bowie_session_id_t *session_id, bowie_session_t **out)
+{
+    if (out == NULL || tx_key == NULL || rx_key == NULL || session_id == NULL) {
+        return BOWIE_ERR_NULL_ARG;
+    }
+    *out = NULL;
+    if (bowie_session_id_is_zero(session_id)) return BOWIE_ERR_INVAL;
+
+    bowie_session_t *s = (bowie_session_t *)calloc(1, sizeof(*s));
+    if (s == NULL) return BOWIE_ERR_NOMEM;
+    memcpy(s->tx_key, tx_key, BOWIE_SESSION_KEY_LEN);
+    memcpy(s->rx_key, rx_key, BOWIE_SESSION_KEY_LEN);
+    s->id = *session_id;
     *out = s;
     return BOWIE_OK;
 }
@@ -341,6 +404,7 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
     int             final_len;
     size_t          written;
     size_t          required;
+    uint8_t         counter_bytes[BOWIE_SESSION_COUNTER_LEN];
 
     if (session == NULL || out == NULL || out_len == NULL) {
         return BOWIE_ERR_NULL_ARG;
@@ -349,11 +413,12 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
         return BOWIE_ERR_NULL_ARG;
     }
 
-    if (plaintext_len > SIZE_MAX - BOWIE_SESSION_TAG_LEN) {
+    if (plaintext_len > SIZE_MAX - BOWIE_SESSION_OVERHEAD_LEN) {
         return BOWIE_ERR_TOO_LARGE;
     }
 
-    required = plaintext_len + BOWIE_SESSION_TAG_LEN;
+    if (session->tx_counter == UINT64_MAX) return BOWIE_ERR_TOO_LARGE;
+    required = plaintext_len + BOWIE_SESSION_OVERHEAD_LEN;
 
     if (out_cap < required) {
         return BOWIE_ERR_TOO_SMALL;
@@ -363,7 +428,8 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
         return BOWIE_ERR_TOO_LARGE;
     }
 
-    make_nonce(session->counter, nonce);
+    encode_counter(session->tx_counter, counter_bytes);
+    make_nonce(session->tx_counter, nonce);
 
     ctx = EVP_CIPHER_CTX_new();
     if (ctx == NULL) {
@@ -381,7 +447,14 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
         return BOWIE_ERR_CRYPTO;
     }
 
-    if (EVP_EncryptInit_ex(ctx, NULL, NULL, session->key, nonce) != 1) {
+    if (EVP_EncryptInit_ex(ctx, NULL, NULL, session->tx_key, nonce) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    memcpy(out, counter_bytes, sizeof(counter_bytes));
+    len = 0;
+    if (EVP_EncryptUpdate(ctx, NULL, &len, counter_bytes, sizeof(counter_bytes)) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return BOWIE_ERR_CRYPTO;
     }
@@ -389,7 +462,7 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
     len = 0;
 
     if (plaintext_len > 0) {
-        if (EVP_EncryptUpdate(ctx, out, &len,
+        if (EVP_EncryptUpdate(ctx, out + BOWIE_SESSION_COUNTER_LEN, &len,
                                (const unsigned char *)plaintext,
                                (int)plaintext_len) != 1) {
             EVP_CIPHER_CTX_free(ctx);
@@ -400,7 +473,7 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
     written = (size_t)len;
 
     final_len = 0;
-    if (EVP_EncryptFinal_ex(ctx, out + written, &final_len) != 1) {
+    if (EVP_EncryptFinal_ex(ctx, out + BOWIE_SESSION_COUNTER_LEN + written, &final_len) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return BOWIE_ERR_CRYPTO;
     }
@@ -408,15 +481,15 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
 
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG,
                              BOWIE_SESSION_TAG_LEN,
-                             out + written) != 1) {
+                             out + BOWIE_SESSION_COUNTER_LEN + written) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return BOWIE_ERR_CRYPTO;
     }
-    written += BOWIE_SESSION_TAG_LEN;
+    written += BOWIE_SESSION_OVERHEAD_LEN;
 
     EVP_CIPHER_CTX_free(ctx);
 
-    session->counter += 1;
+    session->tx_counter += 1;
 
     *out_len = written;
     return BOWIE_OK;
@@ -437,6 +510,8 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
 {
     EVP_CIPHER_CTX *ctx;
     uint8_t         nonce[BOWIE_SESSION_NONCE_LEN];
+    uint8_t         counter_bytes[BOWIE_SESSION_COUNTER_LEN];
+    uint64_t        counter;
     int             len;
     int             final_len;
     size_t          written;
@@ -449,11 +524,14 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
         return BOWIE_ERR_NULL_ARG;
     }
 
-    if (ciphertext_len < BOWIE_SESSION_TAG_LEN) {
+    if (ciphertext_len < BOWIE_SESSION_OVERHEAD_LEN) {
         return BOWIE_ERR_CRYPTO;
     }
 
-    ct_len = ciphertext_len - BOWIE_SESSION_TAG_LEN;
+    ct_len = ciphertext_len - BOWIE_SESSION_OVERHEAD_LEN;
+    memcpy(counter_bytes, ciphertext, sizeof(counter_bytes));
+    counter = decode_counter(counter_bytes);
+    if (!replay_candidate(session, counter)) return BOWIE_ERR_PERMISSION;
 
     if (out_cap < ct_len) {
         return BOWIE_ERR_TOO_SMALL;
@@ -463,7 +541,7 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
         return BOWIE_ERR_TOO_LARGE;
     }
 
-    make_nonce(session->counter, nonce);
+    make_nonce(counter, nonce);
 
     ctx = EVP_CIPHER_CTX_new();
     if (ctx == NULL) {
@@ -481,7 +559,13 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
         return BOWIE_ERR_CRYPTO;
     }
 
-    if (EVP_DecryptInit_ex(ctx, NULL, NULL, session->key, nonce) != 1) {
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, session->rx_key, nonce) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return BOWIE_ERR_CRYPTO;
+    }
+
+    len = 0;
+    if (EVP_DecryptUpdate(ctx, NULL, &len, counter_bytes, sizeof(counter_bytes)) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return BOWIE_ERR_CRYPTO;
     }
@@ -490,7 +574,7 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
 
     if (ct_len > 0) {
         if (EVP_DecryptUpdate(ctx, out, &len,
-                               (const unsigned char *)ciphertext,
+                               (const unsigned char *)ciphertext + BOWIE_SESSION_COUNTER_LEN,
                                (int)ct_len) != 1) {
             EVP_CIPHER_CTX_free(ctx);
             return BOWIE_ERR_CRYPTO;
@@ -501,7 +585,7 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
 
     {
         const unsigned char *tag =
-            (const unsigned char *)ciphertext + ct_len;
+            (const unsigned char *)ciphertext + BOWIE_SESSION_COUNTER_LEN + ct_len;
 
         if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG,
                                  BOWIE_SESSION_TAG_LEN,
@@ -520,7 +604,7 @@ bowie_error_t bowie_session_decrypt(bowie_session_t *session,
 
     EVP_CIPHER_CTX_free(ctx);
 
-    session->counter += 1;
+    replay_commit(session, counter);
 
     *out_len = written;
     return BOWIE_OK;

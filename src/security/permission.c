@@ -100,6 +100,7 @@ static void log_failure(const char *reason,
         bowie_log_init(&g_permission_log, NULL, BOWIE_LOG_WARN);
         g_permission_log_ready = 1;
     }
+    if (g_permission_log.hook == NULL) return;
 
     if (subject == NULL) {
         bowie_log_emit(&g_permission_log, BOWIE_LOG_WARN,
@@ -138,6 +139,11 @@ bowie_error_t bowie_permission_check_list(
     if (!bowie_grant_matches_issuer(grant, owner)) {
         log_failure("owner mismatch", subject_id);
         return BOWIE_ERR_OWNER_MISMATCH;
+    }
+
+    if (bowie_grant_verify(grant) != BOWIE_OK) {
+        log_failure("grant signature invalid", subject_id);
+        return BOWIE_ERR_SIGN_INVALID;
     }
 
     if (!bowie_grant_is_time_valid(grant, now)) {
