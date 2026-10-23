@@ -71,6 +71,7 @@
 #include "bowie/types.h"
 #include "bowie/err.h"
 #include "security/grant.h"
+#include "security/sign.h"
 
 /*
  * ============================================================================
@@ -119,6 +120,35 @@ START_TEST(test_grant_clear)
     ck_assert_uint_eq(g.permissions, 0);
     ck_assert_uint_eq(g.issued_at, 0);
     ck_assert_uint_eq(g.expires_at, 0);
+}
+END_TEST
+
+START_TEST(test_grant_signed_wire_roundtrip)
+{
+    bowie_sign_private_t priv;
+    bowie_sign_public_t pub;
+    bowie_grant_t grant, decoded;
+    uint8_t wire[BOWIE_GRANT_WIRE_LEN];
+    long fields;
+
+    ck_assert_int_eq(bowie_security_sign_generate(&pub, &priv), BOWIE_OK);
+    bowie_grant_clear(&grant);
+    make_peer_id(&grant.subject, 0x31);
+    memcpy(grant.issuer.bytes, pub.bytes, sizeof(pub.bytes));
+    make_grant_id(&grant.grant_id, 0x42);
+    grant.permissions = BOWIE_GRANT_INTERNET_USE | BOWIE_GRANT_INTERNET_RELAY;
+    grant.issued_at = 1000u;
+    grant.expires_at = 2000u;
+    ck_assert_int_eq(bowie_grant_sign(&grant, &priv), BOWIE_OK);
+    ck_assert_int_eq(bowie_grant_verify(&grant), BOWIE_OK);
+
+    fields = bowie_grant_serialize(&grant, wire, sizeof(wire));
+    ck_assert_int_eq(fields, (long)(sizeof(wire) - sizeof(grant.signature)));
+    memcpy(wire + fields, grant.signature, sizeof(grant.signature));
+    ck_assert_int_eq(bowie_grant_deserialize(wire, sizeof(wire), &decoded), BOWIE_OK);
+    ck_assert_int_eq(bowie_grant_verify(&decoded), BOWIE_OK);
+    decoded.permissions ^= BOWIE_GRANT_INTERNET_RELAY;
+    ck_assert_int_eq(bowie_grant_verify(&decoded), BOWIE_ERR_SIGN_INVALID);
 }
 END_TEST
 
@@ -377,6 +407,7 @@ static Suite *grant_suite(void)
     TCase *tc_serialize;
     TCase *tc_time;
     TCase *tc_match;
+    TCase *tc_signature;
 
     s = suite_create("SecurityGrant");
 
@@ -410,6 +441,10 @@ static Suite *grant_suite(void)
     tcase_add_test(tc_match, test_grant_allows_set);
     tcase_add_test(tc_match, test_grant_allows_zero);
     suite_add_tcase(s, tc_match);
+
+    tc_signature = tcase_create("Signature");
+    tcase_add_test(tc_signature, test_grant_signed_wire_roundtrip);
+    suite_add_tcase(s, tc_signature);
 
     return s;
 }

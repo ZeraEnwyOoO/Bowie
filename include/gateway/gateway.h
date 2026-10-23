@@ -23,10 +23,10 @@
  *
  * Packet forwarding between the Bowie tunnel and the Internet.
  *
- * The gateway takes a packet from the tunnel, decides where it
- * should go, and forwards it. On the return path it takes a
- * packet from the Internet, finds the session it belongs to,
- * and sends it back through the tunnel.
+ * The gateway reads packets from its tunnel fd, encrypts them
+ * for the connected peer, and sends them over the NAT data
+ * channel. Inbound peer packets are authenticated, decrypted,
+ * and written to the tunnel fd.
  *
  * The gateway is not a NAT. The tunnel is point-to-point; the
  * gateway sees one peer on one side and the Internet on the
@@ -52,10 +52,9 @@
  * Design notes
  * ----------------------------------------------------------------------------
  *
- * The gateway is a small loop. It reads from the tunnel,
- * forwards to the Internet, and on the return path reads from
- * the Internet and forwards to the tunnel. A single gateway
- * instance serves one peer.
+ * The host network stack routes injected packets onward. This
+ * module does not configure host forwarding, firewall, or NAT
+ * rules. A single gateway instance serves one peer.
  *
  * The handle is opaque. The caller owns it, never sees its
  * layout, and frees it with bowie_gateway_close().
@@ -133,15 +132,38 @@ extern "C" {
  *     If 1, the gateway forwards IPv6 packets as well as
  *     IPv4. The default is 0; IPv6 is opt-in because many
  *     owners do not have a working IPv6 uplink.
+ *
+ * source_gateway
+ *     Set on the authenticated source endpoint. It enables
+ *     destination filtering before client packets enter the
+ *     owner's host network stack and applies the presenting
+ *     grant's cumulative byte quota.
  */
 
 #define BOWIE_GATEWAY_CONNTRACK_DEFAULT 1024
+
+typedef int (*bowie_gateway_emit_fn)(void *context, const uint8_t *packet,
+                                     size_t packet_len);
+typedef int (*bowie_gateway_source_egress_fn)(void *context,
+        const uint8_t *packet, size_t packet_len,
+        bowie_gateway_emit_fn emit, void *emit_context);
+typedef void (*bowie_gateway_quota_exceeded_fn)(void *context);
+typedef int (*bowie_gateway_quota_save_fn)(void *context, uint64_t used);
 
 typedef struct bowie_gateway_config {
     uint32_t mtu;
     uint32_t conntrack_capacity;
     int      allow_private;
     int      allow_ipv6;
+    int      source_gateway;
+    uint64_t source_grant_quota_bytes; /* zero means unlimited */
+    uint64_t *source_grant_quota_used; /* optional persistent-in-engine counter */
+    bowie_gateway_quota_save_fn source_quota_save;
+    void    *source_quota_save_context;
+    bowie_gateway_quota_exceeded_fn source_quota_exceeded;
+    void    *source_quota_context;
+    bowie_gateway_source_egress_fn source_egress;
+    void    *source_egress_context;
 } bowie_gateway_config_t;
 
 /*
@@ -215,7 +237,8 @@ void bowie_gateway_close(bowie_gateway_t *gw);
  * Returns BOWIE_ERR_INTERNAL if the loop could not be started.
  */
 bowie_error_t bowie_gateway_start(bowie_gateway_t *gw,
-                                   bowie_session_t *session);
+                                   bowie_session_t *session,
+                                   bowie_nat_t *nat);
 
 /*
  * Stop forwarding.
@@ -250,14 +273,13 @@ typedef struct bowie_gateway_stats {
     uint64_t drops_too_large;
     uint64_t drops_no_session;
     uint64_t drops_no_conntrack;
+    uint64_t packets_dropped;
 } bowie_gateway_stats_t;
 
 /*
  * Copy the current statistics into the caller's struct.
  *
- * The counters are read without a lock. A concurrent update
- * may produce a slightly inconsistent snapshot, which is fine
- * for display.
+ * The counters are copied under the gateway lock.
  *
  * Passing NULL for either argument is a no-op.
  */

@@ -153,6 +153,11 @@ typedef struct bowie_dht_bootstrap {
  */
 
 typedef struct bowie_dht_config {
+    /* Optional thread-safe platform hook called before sending to a discovered
+     * DHT endpoint. Returning zero prevents the send. */
+    int (*prepare_underlay_address)(void *context, int family,
+                                    const uint8_t *address, size_t address_len);
+    void *underlay_context;
 
     /*
      * ----------------------------------------------------------------

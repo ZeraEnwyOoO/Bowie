@@ -64,6 +64,7 @@
  */
 
 #include <openssl/evp.h>
+#include <string.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
@@ -220,6 +221,26 @@ bowie_error_t bowie_security_sign_generate(
     }
 
     EVP_PKEY_free(pkey);
+    return BOWIE_OK;
+}
+
+bowie_error_t bowie_security_sign_from_seed(
+    const uint8_t seed[BOWIE_SIGN_SEED_LEN],
+    bowie_sign_public_t *out_public,
+    bowie_sign_private_t *out_private)
+{
+    if (seed == NULL || out_public == NULL || out_private == NULL)
+        return BOWIE_ERR_NULL_ARG;
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL,
+                                                  seed, BOWIE_SIGN_SEED_LEN);
+    if (pkey == NULL) return BOWIE_ERR_CRYPTO;
+    size_t len = BOWIE_SIGN_PUBLIC_LEN;
+    int ok = EVP_PKEY_get_raw_public_key(pkey, out_public->bytes, &len);
+    EVP_PKEY_free(pkey);
+    if (ok != 1 || len != BOWIE_SIGN_PUBLIC_LEN) return BOWIE_ERR_CRYPTO;
+    memcpy(out_private->bytes, seed, BOWIE_SIGN_SEED_LEN);
+    memcpy(out_private->bytes + BOWIE_SIGN_SEED_LEN, out_public->bytes,
+           BOWIE_SIGN_PUBLIC_LEN);
     return BOWIE_OK;
 }
 

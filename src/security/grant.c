@@ -104,6 +104,7 @@ size_t bowie_grant_serialized_len(const bowie_grant_t *grant)
          + BOWIE_GRANT_ID_LEN
          + 4
          + 8
+         + 8
          + 8;
 }
 
@@ -156,7 +157,78 @@ long bowie_grant_serialize(const bowie_grant_t *grant,
         return BOWIE_ERR_TOO_SMALL;
     }
 
+    /* Cumulative source-egress byte cap; zero represents unlimited. */
+    if (bowie_cursor_put_be64(&c, grant->max_egress_bytes) == 0) {
+        return BOWIE_ERR_TOO_SMALL;
+    }
+
     return (long)c.pos;
+}
+
+bowie_error_t bowie_grant_deserialize(const uint8_t *wire, size_t wire_len,
+                                      bowie_grant_t *out)
+{
+    bowie_cursor_t c;
+    bowie_error_t rc;
+    if (wire == NULL || out == NULL) return BOWIE_ERR_NULL_ARG;
+    if (wire_len != BOWIE_GRANT_WIRE_LEN) return BOWIE_ERR_FORMAT;
+    bowie_grant_clear(out);
+    bowie_cursor_init(&c, (void *)wire, wire_len);
+    rc = bowie_cursor_get_raw(&c, out->subject.bytes, BOWIE_PEER_ID_LEN);
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_cursor_get_raw(&c, out->issuer.bytes, BOWIE_PUBLIC_ID_LEN);
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_cursor_get_raw(&c, out->grant_id.bytes, BOWIE_GRANT_ID_LEN);
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_cursor_get_be32(&c, &out->permissions);
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_cursor_get_be64(&c, &out->issued_at);
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_cursor_get_be64(&c, &out->expires_at);
+    if (rc != BOWIE_OK) return rc;
+    rc = bowie_cursor_get_be64(&c, &out->max_egress_bytes);
+    if (rc != BOWIE_OK) return rc;
+    return bowie_cursor_get_raw(&c, out->signature, sizeof(out->signature));
+}
+
+bowie_error_t bowie_grant_sign(bowie_grant_t *grant,
+                               const bowie_sign_private_t *private_key)
+{
+    static const uint8_t domain[] = "Bowie owner grant v2";
+    uint8_t serialized[sizeof(domain) + BOWIE_GRANT_WIRE_LEN - 64u];
+    bowie_sign_signature_t signature;
+    long len;
+    bowie_error_t rc;
+    if (grant == NULL || private_key == NULL) return BOWIE_ERR_NULL_ARG;
+    memcpy(serialized, domain, sizeof(domain));
+    len = bowie_grant_serialize(grant, serialized + sizeof(domain),
+                                sizeof(serialized) - sizeof(domain));
+    if (len < 0) return (bowie_error_t)len;
+    rc = bowie_security_sign(private_key, serialized,
+                             sizeof(domain) + (size_t)len, &signature);
+    if (rc == BOWIE_OK) memcpy(grant->signature, signature.bytes,
+                               sizeof(grant->signature));
+    return rc;
+}
+
+bowie_error_t bowie_grant_verify(const bowie_grant_t *grant)
+{
+    static const uint8_t domain[] = "Bowie owner grant v2";
+    uint8_t serialized[sizeof(domain) + BOWIE_GRANT_WIRE_LEN - 64u];
+    bowie_sign_public_t public_key;
+    bowie_sign_signature_t signature;
+    long len;
+    if (grant == NULL) return BOWIE_ERR_NULL_ARG;
+    memcpy(serialized, domain, sizeof(domain));
+    len = bowie_grant_serialize(grant, serialized + sizeof(domain),
+                                sizeof(serialized) - sizeof(domain));
+    if (len < 0) return (bowie_error_t)len;
+    memcpy(public_key.bytes, grant->issuer.bytes, sizeof(public_key.bytes));
+    memcpy(signature.bytes, grant->signature, sizeof(signature.bytes));
+    return bowie_security_verify(&public_key, serialized,
+                                 sizeof(domain) + (size_t)len,
+                                 &signature) == BOWIE_OK
+        ? BOWIE_OK : BOWIE_ERR_SIGN_INVALID;
 }
 
 /*

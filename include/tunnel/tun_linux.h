@@ -115,6 +115,9 @@ bowie_error_t bowie_tun_open(bowie_tun_t **out,
                              const char *name,
                              size_t mtu);
 
+/* Wrap a platform-created packet tunnel fd (Android VpnService). */
+bowie_error_t bowie_tun_wrap_fd(bowie_tun_t **out, int fd, int take_ownership);
+
 /*
  * Close a Linux TUN device.
  *
@@ -131,6 +134,14 @@ void bowie_tun_close(bowie_tun_t *tun);
  * Returns -1 if the handle is NULL or closed.
  */
 int bowie_tun_fd(const bowie_tun_t *tun);
+
+/* Return the kernel interface name owned by this TUN handle. */
+const char *bowie_tun_name(const bowie_tun_t *tun);
+
+/* Assign an IPv4 address/prefix and bring the interface up. */
+bowie_error_t bowie_tun_configure_ipv4(bowie_tun_t *tun,
+                                       const char *address,
+                                       uint8_t prefix_len);
 
 /*
  * ============================================================================

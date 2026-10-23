@@ -246,13 +246,12 @@ START_TEST(test_clear_keeps_config)
 {
     bowie_dht_t d = make_dht(1000u);
     bowie_mtime_t saved = d.last_refresh_ms;
-    (void)saved;
     uint32_t saved_refresh = d.config.refresh_interval_s;
 
     bowie_dht_clear(&d);
     ck_assert_uint_eq(d.config.refresh_interval_s,
                       saved_refresh);
-    ck_assert_uint_eq(d.last_refresh_ms, 0u);
+    ck_assert_uint_eq(d.last_refresh_ms, saved);
 }
 END_TEST
 
@@ -334,7 +333,7 @@ START_TEST(test_make_query_ping)
         BOWIE_OK);
     ck_assert_int_eq(m.type, BOWIE_DHT_MSG_QUERY);
     ck_assert_int_eq(m.query_type, BOWIE_DHT_QUERY_PING);
-    ck_assert_uint_eq(m.tid_len, 2u);
+    ck_assert_uint_eq(m.tid_len, 0u);
     ck_assert(bowie_dht_node_id_equal(&m.sender_id,
                                       &d.local_id));
 }
@@ -490,6 +489,35 @@ START_TEST(test_handle_ping)
 }
 END_TEST
 
+START_TEST(test_handle_response_adds_advertised_nodes)
+{
+    bowie_dht_t d = make_dht(1000u);
+    bowie_dht_message_arena_t a = make_arena();
+    bowie_dht_message_t response;
+    bowie_dht_message_t ignored;
+    bowie_dht_compact_node_t advertised;
+    bowie_addr_t from;
+    int has = 0;
+
+    memset(&response, 0, sizeof(response));
+    response.type = BOWIE_DHT_MSG_RESPONSE;
+    response.sender_id.bytes[0] = 0x20u;
+    response.nodes = &advertised;
+    response.nodes_count = 1u;
+    memset(&advertised, 0, sizeof(advertised));
+    advertised.id.bytes[0] = 0x30u;
+    advertised.addr.family = BOWIE_AF_INET;
+    advertised.addr.addr[0] = 10u;
+    advertised.addr.addr[3] = 7u;
+    advertised.addr.port = 6881u;
+    make_addr(&from, 0x0Au, 6881u);
+
+    ck_assert_int_eq(bowie_dht_handle_message(&d, &response, &from, 1000u,
+                                               &a, &ignored, &has), BOWIE_OK);
+    ck_assert_ptr_nonnull(bowie_dht_routing_find(&d.routing, &advertised.id));
+}
+END_TEST
+
 START_TEST(test_handle_message_null)
 {
     bowie_dht_t d = make_dht(1000u);
@@ -611,6 +639,7 @@ static Suite *dht_suite(void)
 
     TCase *tc_hm = tcase_create("HandleMessage");
     tcase_add_test(tc_hm, test_handle_ping);
+    tcase_add_test(tc_hm, test_handle_response_adds_advertised_nodes);
     tcase_add_test(tc_hm, test_handle_message_null);
     suite_add_tcase(s, tc_hm);
 

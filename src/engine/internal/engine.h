@@ -43,16 +43,24 @@
 #include "bowie/hooks.h"      /* For bowie_event_record_t and bowie_hooks_t */
 #include "bowie/config.h"     /* For bowie_config_t (log_level, etc.) */
 #include "engine/engine.h"
+
+#define BOWIE_ENGINE_GRANT_USAGE_MAX 128u
+
+typedef struct bowie_engine_grant_usage {
+    bowie_grant_id_t grant_id;
+    uint64_t bytes_used;
+    uint64_t bytes_limit;
+    uint64_t durable_bytes;
+} bowie_engine_grant_usage_t;
 #include "dht/dht.h"
 #include "nat/nat.h"
-#include "tunnel/tun_linux.h"
+#include "tunnel/tun.h"
 #include "gateway/gateway.h"
 #include "security/sign.h"
 #include "security/session.h"
 #include "security/revoke.h"
-#include "security/quota.h"
-#include "security/grant.h"
 #include "net/peer.h"
+#include "engine/signal_metered.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,6 +75,9 @@ extern "C" {
 #define BOWIE_ENGINE_DHT_HASHES_CAP       256u
 #define BOWIE_ENGINE_DHT_PEERS_CAP       4096u
 #define BOWIE_ENGINE_DHT_RATE_LIMIT_CAP    64u
+#define BOWIE_ENGINE_SIGNAL_RELAY_HOST_MAX 256u
+#define BOWIE_ENGINE_METERED_KEY_MAX 512u
+#define BOWIE_ENGINE_METERED_CHANNEL_MAX 256u
 
 #define BOWIE_ENGINE_SIGNAL_BUF_MAX \
     (BOWIE_PROTO_FRAME_HEADER_LEN + BOWIE_PROTO_MAX_PAYLOAD)
@@ -115,6 +126,9 @@ struct bowie_engine {
      */
     bowie_engine_state_t state;
     bowie_engine_config_t cfg;       /* Engine-specific (ports, stun, turn) */
+    char                 signal_relay_host[BOWIE_ENGINE_SIGNAL_RELAY_HOST_MAX];
+    char                 signal_metered_key[BOWIE_ENGINE_METERED_KEY_MAX];
+    char                 signal_metered_channel[BOWIE_ENGINE_METERED_CHANNEL_MAX];
     bowie_config_t       base_cfg;   /* Base config (log_level, capabilities) */
     bowie_hooks_t        hooks;      /* Installed hooks (log, event, storage) */
 
@@ -128,6 +142,11 @@ struct bowie_engine {
     bowie_public_id_t    own_public_id;
     bowie_peer_id_t      own_peer_id;
     bowie_dht_node_id_t  own_dht_id;
+    /* Active room context is included in authenticated PoO signatures. */
+    bowie_dht_info_hash_t active_room_hash;
+    int                   active_room;
+    bowie_dht_info_hash_t announced_room_hash;
+    int                   room_announced;
 
     /*
      * ----------------------------------------------------------------
@@ -162,6 +181,7 @@ struct bowie_engine {
      * ----------------------------------------------------------------
      */
     bowie_gateway_t *gateway;
+    int gateway_source;
 
     /*
      * ----------------------------------------------------------------
@@ -169,7 +189,14 @@ struct bowie_engine {
      * ----------------------------------------------------------------
      */
     bowie_revoke_list_t revoke_list;
-    bowie_quota_t       quota;
+    bowie_engine_grant_usage_t grant_usage[BOWIE_ENGINE_GRANT_USAGE_MAX];
+    int                 active_quota_slot;
+    int                 quota_disconnect_pending;
+    int                 quota_monitor_stop;
+    int                 quota_monitor_started;
+    pthread_t           quota_monitor_thread;
+    bowie_grant_t       presented_grant;
+    int                 has_presented_grant;
 
     /*
      * ----------------------------------------------------------------
@@ -178,7 +205,6 @@ struct bowie_engine {
      */
     bowie_peer_t    peer;
     bowie_session_t *session;
-    bowie_grant_t   grant;
 
     /*
      * ----------------------------------------------------------------
@@ -190,6 +216,9 @@ struct bowie_engine {
     pthread_t        signal_thread;
     int              signal_running;
     int              signal_stop;
+    struct sockaddr_in signal_relay_addr;
+    int                signal_relay_enabled;
+    bowie_metered_t    *metered;
 
     struct sockaddr_in peer_signal_addr;
     int                peer_signal_addr_valid;

@@ -106,6 +106,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <pthread.h>
 
 #include "bowie/types.h"
 #include "bowie/err.h"
@@ -166,6 +167,8 @@ typedef struct bowie_nat_backend_ops bowie_nat_backend_ops_t;
  */
 
 struct bowie_nat {
+    /* Serializes callback replacement against backend callback delivery. */
+    pthread_mutex_t                     callback_lock;
     bowie_nat_config_t                   cfg;
     bowie_nat_state_t                    state;
 
@@ -342,6 +345,10 @@ struct bowie_nat_backend_ops {
      */
     bowie_error_t (*capabilities)(const bowie_nat_t *nat,
                                   bowie_nat_caps_t *out);
+
+    bowie_error_t (*add_turn_server)(bowie_nat_t *nat, const char *host,
+                                     uint16_t port, const char *username,
+                                     const char *password);
 };
 
 /*

@@ -80,6 +80,7 @@ extern "C" {
  */
 
 #define BOWIE_SIGN_PUBLIC_LEN    32
+#define BOWIE_SIGN_SEED_LEN      32
 #define BOWIE_SIGN_PRIVATE_LEN   64
 #define BOWIE_SIGN_SIGNATURE_LEN 64
 
@@ -116,6 +117,11 @@ bowie_error_t bowie_security_verify(
  *=============================================================================
  */
 bowie_error_t bowie_security_sign_generate(
+    bowie_sign_public_t *out_public,
+    bowie_sign_private_t *out_private);
+
+bowie_error_t bowie_security_sign_from_seed(
+    const uint8_t seed[BOWIE_SIGN_SEED_LEN],
     bowie_sign_public_t *out_public,
     bowie_sign_private_t *out_private);
 /*

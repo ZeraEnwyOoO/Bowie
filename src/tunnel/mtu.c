@@ -40,8 +40,9 @@
  * headers and the encryption tag.
  *
  * The result is clamped to the accepted range. If the
- * underlying MTU is too small to carry an IPv6 packet after
- * the overhead is subtracted, the safe default is returned
+ * underlying MTU is too small to carry the minimum supported
+ * overlay packet after the overhead is subtracted, the
+ * conservative tunnel default is returned
  * instead. A caller that wants to force a smaller MTU must
  * set it explicitly.
  *
@@ -73,8 +74,10 @@
  *   - a safety margin for future headers and path MTU
  *     variation (52 bytes)
  *
- * The total is 100 bytes, which is exactly the difference
- * between BOWIE_TUN_MTU_DEFAULT and BOWIE_TUN_MTU_TUNNEL.
+ * The total is 100 bytes. This helper estimates a conservative
+ * interface MTU from a known underlying path MTU. The normal
+ * tunnel default is 1500; the NAT backend fragments encrypted
+ * messages to fit its datagram limit.
  */
 #define BOWIE_MTU_OVERHEAD  100u
 
@@ -101,9 +104,7 @@ size_t bowie_mtu_suggest(size_t underlying_mtu)
 
     /*
      * If the underlying MTU is too small to even subtract the
-     * overhead, return the safe default. Returning a number
-     * smaller than the IPv6 minimum would produce a tunnel
-     * that cannot carry IPv6 at all.
+     * overhead, return the conservative interface default.
      */
     if (underlying_mtu <= BOWIE_MTU_OVERHEAD) {
         return BOWIE_TUN_MTU_TUNNEL;
@@ -113,7 +114,8 @@ size_t bowie_mtu_suggest(size_t underlying_mtu)
 
     /*
      * The result must fit the accepted range. A value below
-     * the IPv6 minimum is raised to the safe default; a value
+     * the minimum supported overlay MTU is raised to the
+     * conservative default; a value
      * above the maximum is lowered to the maximum.
      */
     if (suggested < BOWIE_TUN_MTU_MIN) {

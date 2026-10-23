@@ -133,6 +133,16 @@
 extern "C" {
 #endif
 
+#define BOWIE_DHT_TRANSACTION_CAP 64u
+
+typedef struct bowie_dht_transaction {
+    uint8_t                  tid[BOWIE_DHT_MSG_TID_MAX];
+    size_t                   tid_len;
+    bowie_dht_query_type_t   query_type;
+    bowie_dht_info_hash_t    info_hash;
+    int                      used;
+} bowie_dht_transaction_t;
+
 /*
  * ============================================================================
  * DHT ENGINE
@@ -144,6 +154,15 @@ extern "C" {
  */
 
 typedef struct bowie_dht {
+    pthread_mutex_t          state_lock;
+    int                      state_lock_ready;
+    pthread_mutex_t          transaction_lock;
+    int                      transaction_lock_ready;
+    bowie_dht_transaction_t  transactions[BOWIE_DHT_TRANSACTION_CAP];
+    size_t                   transaction_next;
+    bowie_dht_info_hash_t    announce_hash;
+    uint16_t                 announce_port;
+    bowie_mtime_t            last_announce_ms;
     bowie_dht_config_t       config;
     bowie_dht_node_id_t      local_id;
     bowie_dht_routing_t      routing;
@@ -254,6 +273,11 @@ bowie_error_t bowie_dht_init(
  *   created.
  */
 bowie_error_t bowie_dht_start(bowie_dht_t *dht, uint16_t port);
+
+/* Set the peer identity and signaling port this node should announce. */
+bowie_error_t bowie_dht_set_announce(bowie_dht_t *dht,
+                                     const bowie_dht_info_hash_t *info_hash,
+                                     uint16_t signal_port);
 
 /*
  * Stop the DHT background thread.

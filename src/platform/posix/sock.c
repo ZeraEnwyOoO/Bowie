@@ -236,24 +236,7 @@ bowie_error_t bowie_platform_sock_bind_iface(
  * ============================================================================
  */
 
-#if defined(BOWIE_PLATFORM_ANDROID)
-
-/*
- * The Android backend provides a real implementation in
- * src/platform/android/permissions.c. This definition is a
- * placeholder that the build system never selects when the
- * Android backend is present. If it is somehow selected, it
- * returns BOWIE_ERR_NOT_IMPLEMENTED rather than a wrong
- * answer.
- */
-
-bowie_error_t bowie_platform_check_permission(const char *name)
-{
-    (void)name;
-    return BOWIE_ERR_NOT_IMPLEMENTED;
-}
-
-#else
+#if !defined(BOWIE_PLATFORM_ANDROID)
 
 bowie_error_t bowie_platform_check_permission(const char *name)
 {

@@ -41,12 +41,13 @@
  * ----------------------------------------------------------------------------
  *
  * The accepted range is [BOWIE_TUN_MTU_MIN, BOWIE_TUN_MTU_MAX].
- * The minimum is the IPv6 minimum link MTU (1280); a tunnel
- * smaller than that cannot carry IPv6 at all. The maximum is
- * the jumbo frame ceiling (9000).
+ * The minimum accepted interface MTU is 1100 bytes. The
+ * transport fragments larger encrypted messages, so the normal
+ * Ethernet MTU (1500) does not need to be reduced.
  *
- * The default is 1500, the Ethernet MTU. The tunnel default
- * is the default minus the tunnel overhead.
+ * The tunnel default is 1500 bytes. bowie_mtu_suggest() remains
+ * available to calculate a conservative value for a specified
+ * underlying path MTU.
  *
  * ----------------------------------------------------------------------------
  * Dependencies
@@ -74,10 +75,10 @@ extern "C" {
 /*
  * The minimum accepted MTU, in bytes.
  *
- * 1280 is the IPv6 minimum link MTU (RFC 8200). A tunnel
- * smaller than this cannot carry IPv6.
+ * The current overlay carries IPv4 packets and uses 1100 bytes
+ * as its minimum supported interface MTU.
  */
-#define BOWIE_TUN_MTU_MIN  1280u
+#define BOWIE_TUN_MTU_MIN  1100u
 
 /*
  * The maximum accepted MTU, in bytes.
@@ -94,12 +95,10 @@ extern "C" {
 #define BOWIE_TUN_MTU_DEFAULT  1500u
 
 /*
- * The default tunnel MTU, in bytes.
- *
- * This is the default underlying MTU minus the tunnel
- * overhead (100 bytes).
+ * The default tunnel MTU, in bytes. Bowie packet fragmentation
+ * keeps the encrypted transport datagrams under 1200 bytes.
  */
-#define BOWIE_TUN_MTU_TUNNEL  1400u
+#define BOWIE_TUN_MTU_TUNNEL  1500u
 
 /*
  * ============================================================================
@@ -120,8 +119,8 @@ int bowie_mtu_is_valid(size_t mtu);
  *
  * The tunnel overhead is subtracted from the underlying MTU.
  * The result is clamped to the accepted range. If the
- * underlying MTU is too small to carry an IPv6 packet after
- * the overhead is subtracted, the safe default
+ * underlying MTU is too small to carry the minimum supported
+ * overlay packet after the overhead is subtracted, the safe default
  * (BOWIE_TUN_MTU_TUNNEL) is returned instead.
  *
  * A caller that wants to force a smaller MTU must set it

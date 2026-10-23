@@ -46,9 +46,9 @@
  *   - normal:     1500 - 100 = 1400
  *   - jumbo:      9000 - 100 = 8900
  *   - small:      50 -> default (50 <= 100)
- *   - clamp min:  1300 - 100 = 1200 -> default
+ *   - clamp min:  1199 - 100 = 1099 -> default
  *   - clamp max:  10000 - 100 = 9900 -> max
- *   - exact min:  1380 - 100 = 1280
+ *   - exact min:  1200 - 100 = 1100
  *   - exact max:  9100 - 100 = 9000
  *
  * ----------------------------------------------------------------------------
@@ -74,13 +74,13 @@ START_TEST(test_mtu_is_valid_below_min)
 {
     ck_assert_int_eq(bowie_mtu_is_valid(0), 0);
     ck_assert_int_eq(bowie_mtu_is_valid(1), 0);
-    ck_assert_int_eq(bowie_mtu_is_valid(1279), 0);
+    ck_assert_int_eq(bowie_mtu_is_valid(1099), 0);
 }
 END_TEST
 
 START_TEST(test_mtu_is_valid_at_min)
 {
-    ck_assert_int_eq(bowie_mtu_is_valid(1280), 1);
+    ck_assert_int_eq(bowie_mtu_is_valid(BOWIE_TUN_MTU_MIN), 1);
 }
 END_TEST
 
@@ -114,7 +114,7 @@ END_TEST
 START_TEST(test_mtu_suggest_normal)
 {
     /*
-     * 1500 - 100 = 1400, the tunnel default.
+     * 1500 - 100 = 1400.
      */
     ck_assert_uint_eq(bowie_mtu_suggest(1500), 1400);
 }
@@ -143,11 +143,11 @@ END_TEST
 START_TEST(test_mtu_suggest_clamp_min)
 {
     /*
-     * 1300 - 100 = 1200, which is below the IPv6 minimum
-     * (1280). The safe default is returned.
+     * 1199 - 100 = 1099 and 1198 - 100 = 1098, below
+     * the minimum supported MTU.
      */
-    ck_assert_uint_eq(bowie_mtu_suggest(1300), BOWIE_TUN_MTU_TUNNEL);
-    ck_assert_uint_eq(bowie_mtu_suggest(1379), BOWIE_TUN_MTU_TUNNEL);
+    ck_assert_uint_eq(bowie_mtu_suggest(1199), BOWIE_TUN_MTU_TUNNEL);
+    ck_assert_uint_eq(bowie_mtu_suggest(1198), BOWIE_TUN_MTU_TUNNEL);
 }
 END_TEST
 
@@ -165,10 +165,9 @@ END_TEST
 START_TEST(test_mtu_suggest_exact_min)
 {
     /*
-     * 1380 - 100 = 1280, exactly the minimum. The result is
-     * the minimum, not the default.
+     * 1200 - 100 = 1100, exactly the minimum and default.
      */
-    ck_assert_uint_eq(bowie_mtu_suggest(1380), BOWIE_TUN_MTU_MIN);
+    ck_assert_uint_eq(bowie_mtu_suggest(1200), BOWIE_TUN_MTU_MIN);
 }
 END_TEST
 

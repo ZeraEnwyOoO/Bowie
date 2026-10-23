@@ -86,6 +86,9 @@
 #ifndef BOWIE_SECURITY_SESSION_H
 #define BOWIE_SECURITY_SESSION_H
 #define BOWIE_SESSION_KEY_LEN 32u
+#define BOWIE_SESSION_TAG_LEN 16u
+#define BOWIE_SESSION_COUNTER_LEN 8u
+#define BOWIE_SESSION_OVERHEAD_LEN (BOWIE_SESSION_COUNTER_LEN + BOWIE_SESSION_TAG_LEN)
 
 #include <stdint.h>
 #include <stddef.h>
@@ -156,6 +159,15 @@ bowie_error_t bowie_session_new_from_key(
     const uint8_t *key, size_t key_len,
     const bowie_session_id_t *session_id,
     bowie_session_t **out);
+
+/*
+ * Create a network session with independent transmit and receive keys.
+ * Peers must derive the two keys in opposite order so each sender's
+ * transmit key matches the other peer's receive key.
+ */
+bowie_error_t bowie_session_new_from_keys(
+    const uint8_t *tx_key, const uint8_t *rx_key,
+    const bowie_session_id_t *session_id, bowie_session_t **out);
 /*
  * Free a session.
  *
@@ -215,17 +227,16 @@ bowie_error_t bowie_session_encrypt(bowie_session_t *session,
  *
  * Decrypt a ciphertext produced by bowie_session_encrypt().
  *
- * The input is the ciphertext followed by a 16-byte AEAD
- * tag. The caller passes the total length.
+ * The wire format is an 8-byte big-endian sequence number,
+ * ciphertext, and a 16-byte AEAD tag. The sequence is AEAD
+ * associated data and selects the packet nonce.
  *
  * The tag is verified before the plaintext is written to the
  * output buffer. If verification fails, the output buffer is
  * not modified.
  *
- * The nonce is derived from an internal counter that
- * advances on every call. The caller must not skip a call:
- * both peers must decrypt the same number of messages in the
- * same order, or their nonces will diverge.
+ * A 64-packet replay window permits UDP loss and reordering
+ * while rejecting duplicate and stale authenticated packets.
  *
  * Returns BOWIE_OK on success.
  * Returns BOWIE_ERR_NULL_ARG if any required pointer is NULL.
