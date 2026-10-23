@@ -16,7 +16,7 @@ Namespace: bowie_*
 
 ## 1. What is Bowie?
 
-A **P2P Internet sharing tool**. One person with Internet shares it
+A **P2P Egress sharing tool**. One person with Internet shares it
 with someone far away through an encrypted P2P tunnel.
 
 Bowie shares access to the owner's Internet connection, not the Internet
