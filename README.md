@@ -1,3 +1,4 @@
+ clean-release
 # Bowie —  
 
 Version: 2.2.0 (draft, reconciled with SITUATION_REPORT 2026-10-09)
@@ -651,10 +652,5 @@ Everything marked ✅ above is as reported by the owner.
 END OF DOCUMENT# Bowie
 p2p internet share
  
+ main
  
- <img width="349" height="351" alt="Well well well a average Balkaners" src="https://github.com/user-attachments/assets/bd95dba2-a166-43f3-9581-bd93b10cf192" />
-
-
-me now
-
-
