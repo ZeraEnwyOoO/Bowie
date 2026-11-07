@@ -68,9 +68,25 @@ A real run on 2026-10-25: Android phone on mobile data (Wi-Fi off) to Linux lapt
 | Core layers worked | Identity, signed grants, encrypted tunnel, fail-closed gateway |
 | Local checks pass  | Loopback suites for gateway, DHT, scale, room discovery        |
 
+
+
+
+
+<img width="576" height="1280" alt="photo_6260426459474235825_y(4)" src="https://github.com/user-attachments/assets/615d7fe1-2f1f-4076-96d0-e1ab8c573f06" />
+
+
+
+
+
+
+
+
+
+
+
+
 **What alpha did not prove:** that the connection works without a third-party relay. The successful runs used TURN, which beta removes.
 
----
 
 **What went wrong in alpha**
 
@@ -87,13 +103,6 @@ A real run on 2026-10-25: Android phone on mobile data (Wi-Fi off) to Linux lapt
 | Android source path           | Rootless IPv4 packet-to-socket path built but never validated on a device.    | Treated as unverified. Android as Sharer is not a beta gate.                                                |
 | Test evidence weak            | Many unit tests not wired into the runner. Docs drifted.                      | Every claim carries an evidence level: built, unit, loopback, or real network.                              |
 | Unauthenticated signal relay  | Test relay forwards signaling for anyone.                                     | Test infrastructure only. Removed in beta.                                                                  |
-
-
-
-
-<img width="576" height="1280" alt="photo_6260426459474235825_y(4)" src="https://github.com/user-attachments/assets/2de47689-42fb-40ee-95f1-8b099de2cb9f" />
-
-
 
 
 
