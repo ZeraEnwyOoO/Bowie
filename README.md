@@ -649,8 +649,11 @@ the right approach"). Close it.
 **A-10. Not verifiable from here.** I cannot see the repository.
 Everything marked ✅ above is as reported by the owner.
 
+note alpha version has make for test and collect data to develop on beta version
+why alpha? bcus alpha help developer can know bowie share bandwidth is really possible 
+<img width="576" height="1280" alt="photo_6260426459474235825_y(4)" src="https://github.com/user-attachments/assets/a1f89db7-e475-4de4-b4df-b02d40cb9897" />
 END OF DOCUMENT# Bowie
 p2p internet share
  
- main
+ 
  
